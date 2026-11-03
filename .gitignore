@@ -116,3 +116,9 @@ dmypy.json
 
 # claude
 CLAUDE.local.md
+
+# vendor manuals and other PDFs (kept locally, not in git)
+*.pdf
+
+# personal VS Code workspace files
+*.code-workspace

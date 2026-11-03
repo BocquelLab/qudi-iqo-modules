@@ -28,6 +28,7 @@
 - Added `gaussian unrestricted` and `maximum` optimization methods to `ScanningOptimizeLogic`
 - Supported pyvisa for coherent obis laser
 - Added Magnet Toolchain
+- Added `hardware.laser.cobolt_06_laser.Cobolt06Laser`: Cobolt 06-01 Series lasers (via `pycobolt`) for the `SimpleLaserInterface` laser toolchain
 
 ### Other
 - Disabled workflow triggers on a draft PR

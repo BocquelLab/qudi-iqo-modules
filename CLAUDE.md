@@ -12,6 +12,7 @@ Python/Qt (PySide6) framework for controlling lab experiments. Read this before 
 | qudi-iqo-modules (this repo, editable install) | `C:\Software\qudi-iqo-modules\src\qudi\` → `hardware/`, `interface/`, `logic/`, `gui/`, `util/`, `default.cfg` |
 | Config files (separate git repo `BocquelLab/qudi-config`) | `C:\Software\qudi-config\dummy.cfg`, `C:\Software\qudi-config\lab_setup.cfg` |
 | Python 3.10 (`python` is **not** on PATH) | `C:\Users\bocj0388\AppData\Local\miniconda3\envs\qudi-env\python.exe`; `qudi.exe` in the env's `Scripts\` |
+| Lab PC (user `dphy-bocquellab`; Cobolt laser on COM8) | env `C:\Users\dphy-bocquellab\.conda\envs\qudi-env\` (`python.exe`, `Lib\site-packages\qudi\`), logs `C:\Users\dphy-bocquellab\qudi\log\` |
 | Logs | `C:\Users\bocj0388\qudi\log\` |
 | Status variables (one YAML file per module) | `%APPDATA%\qudi\status-<Class>_<base>_<module_name>.cfg` |
 | Last loaded config (re-used at next start) | `%APPDATA%\qudi\load.cfg` |
@@ -27,8 +28,9 @@ puts this repo first so that same-named files here win over qudi-core's, e.g. in
   Use it to test logic, GUIs and the module-loading machinery.
 - **`C:\Software\qudi-config\lab_setup.cfg`** — **real hardware, lab PC only**. Activating its modules opens
   VISA / NI-DAQ resources; never load it on a development PC. New real drivers get their config block here.
-- Today both files are byte-identical copies of upstream `src/qudi/default.cfg` (keep that one as the untouched
-  upstream reference). They will diverge as the lab is set up.
+- `dummy.cfg` is still a byte-identical copy of upstream `src/qudi/default.cfg` (keep that one as the untouched
+  upstream reference). `lab_setup.cfg` has started to diverge: `laser_logic` is wired to the Cobolt laser
+  (`cobolt_laser`, `laser/cobolt_06_laser.py`) instead of `laser_dummy`.
 - Config blocks live in the config repo, not in this repo. Commit config changes in `C:\Software\qudi-config`.
 - This dev PC has pyvisa but **no VISA backend** (no NI-VISA / Keysight IO Libraries): `pyvisa.ResourceManager()`
   raises here. Expected — real drivers can only be activated on the lab PC.
@@ -352,10 +354,16 @@ class AcmeTc200(ProcessControlInterface):
 What the template encodes:
 
 - Communication: all maintained drivers use **pyvisa** for GPIB, USB-TMC, LAN (`TCPIP0::<ip>::inst0::INSTR` or
-  `TCPIP::<ip>::<port>::SOCKET`) *and* RS-232 (`ASRL<n>::INSTR` + `baud_rate=`). pyserial is **not** installed
-  in `qudi-env`; `motor/motor_newport_conex_agp.py` is the only pyserial driver and is unmaintained. Vendor DLLs
-  go through `ctypes` (`powermeter/thorlabs_powermeter.py`); vendor Python packages are imported at module top
-  (`zaber_motion`, `nidaqmx` are installed; `seabreeze`, `TimeTagger` are not).
+  `TCPIP::<ip>::<port>::SOCKET`) *and* RS-232 (`ASRL<n>::INSTR` + `baud_rate=`). Don't use pyserial directly
+  (`motor/motor_newport_conex_agp.py` is the only such driver and is unmaintained); it is only present as a
+  dependency of pycobolt. Vendor DLLs go through `ctypes` (`powermeter/thorlabs_powermeter.py`); vendor Python
+  packages are imported at module top (`zaber_motion`, `nidaqmx` are installed; `seabreeze`, `TimeTagger` are
+  not). Packages that exist on the lab PC only are imported inside `on_activate` instead, so qudi still starts
+  without them (`laser/cobolt_06_laser.py` -> `pycobolt`).
+- Extra packages to install into `qudi-env` (`pip install <name>` with the env activated): **`pycobolt`** for the
+  Cobolt 06-01 laser (`laser/cobolt_06_laser.py`; pulls in pyserial; version 0.2.2 on the lab PC). When extending
+  that driver, read the installed source (`python -c "import pycobolt; print(pycobolt.__file__)"`), not the
+  GitHub page; the command set is in `docs/D0951-D-Manual-Cobolt-06-01-Series-12-V.pdf`, section 4.6.
 - Set `timeout`, `write_termination`, `read_termination` explicitly in `open_resource`; route every write/query
   through `_write`/`_query` helpers under the `Mutex`.
 - Constraints (channels, units, limits) are built in `on_activate`, ideally from `*IDN?` / device queries, with
@@ -434,6 +442,7 @@ not installed yet; line length 120 per `pyproject.toml`).
 | VISA TCP socket address pattern only (file itself is broken, see below) | `temperature/cryocon.py` | — |
 | USB via vendor DLL + ctypes | `powermeter/thorlabs_powermeter.py` | `ProcessValueInterface` |
 | USB via vendor Python package | `motor/zaber_motion.py`, `spectrometer/oceanoptics_spectrometer.py` | `MotorInterface`, `SpectrometerInterface` |
+| USB virtual COM via vendor package imported lazily in `on_activate`, fault reporting, state checks before run-mode changes and starts | `laser/cobolt_06_laser.py` | `SimpleLaserInterface` |
 | NI-DAQmx | `ni_x_series/ni_x_series_analog_output.py` | `ProcessSetpointInterface` + `ProcessControlSwitchMixin` |
 | Dummy with ConfigOption constructor + constraints | `dummy/process_control_dummy.py` | `ProcessControlInterface` |
 | Dummy with StatusVar | `dummy/switch_dummy.py` | `SwitchInterface` |
@@ -458,6 +467,8 @@ Avoid as models: `power_supply/*`, `temperature/*`, `dig_generator/national_inst
 - Prefer testing with dummy hardware; never assume real devices are attached; never load `lab_setup.cfg` on a
   dev PC.
 - Don't edit qudi-core (site-packages). Extend in this repo; don't add `__init__.py` files.
+- Lab-specific changes to upstream GUIs go into copies under `src/qudi/gui/bocquellab/` (e.g.
+  `bocquellab/laser/laser_gui.py`, used by `lab_setup.cfg`); leave the upstream files untouched.
 - Hardware modules: no experiment logic, no Qt widgets, no `print` (use `self.log`), no hardware access in
   `__init__`.
 - Every new hardware class: subclass the interface only (not `Base` again), `Mutex` around I/O, `constraints`
