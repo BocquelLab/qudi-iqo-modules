@@ -22,6 +22,11 @@ there is no `__init__.py` anywhere under `src/qudi/` and none must be added. `im
 this repo, `import qudi.core.x` in site-packages, and `qudi.util` is merged from both (`src/sitecustomize.py`
 puts this repo first so that same-named files here win over qudi-core's, e.g. in `qudi.util.fit_models`).
 
+## Lab wiring
+
+The setup wiring diagram is in `C:\Software\qudi-config\docs\nv_setup_wiring.pdf`. It must be read before
+any work on counting, scanning, microwave, laser modulation or pulsed measurements.
+
 ## Config files: dummy vs lab
 
 - **`C:\Software\qudi-config\dummy.cfg`** — development on **any PC**. Dummy hardware only (`hardware/dummy/*`).
