@@ -36,6 +36,7 @@ class BocquelLabMicrowaveSRSSG(MicrowaveSRSSG):
       the ODMR logic clips CW and scan powers to it; set_cw / configure_scan also refuse anything
       higher (ValueError), independently of the inherited assert checks.
     - warning_power (dBm, optional): a power above this is accepted but logged as a warning.
+    - after set_cw the front-panel display shows the Type-N power (DISP 6) instead of the frequency.
 
     Only qudi is limited: the SG384 front panel can still set up to +16.5 dBm.
 
@@ -92,6 +93,10 @@ class BocquelLabMicrowaveSRSSG(MicrowaveSRSSG):
     def set_cw(self, frequency, power):
         self._check_power(power, 'CW')
         super().set_cw(frequency, power)
+        # Front panel: show the Type-N power instead of the frequency (display only, no RF change).
+        # A frequency scan list sets the display back to frequency for each list point.
+        with self._thread_lock:
+            self._write('DISP 6')
 
     def configure_scan(self, power, frequencies, mode, sample_rate):
         self._check_power(power, 'Scan')
