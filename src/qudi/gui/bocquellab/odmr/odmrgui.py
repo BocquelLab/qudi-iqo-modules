@@ -3,8 +3,9 @@
 BocquelLab extension of qudi's ODMR GUI (qudi.gui.odmr.odmrgui): the CW control dock also shows the
 frequency, power and RF output state read back from the microwave source after each change made by
 qudi (BocquelLabOdmrLogic.sigMicrowaveReadback). Each read-back value sits directly below its
-setting; the RF output state is to the right of the four fields. Default view: control docks
-stacked on the left, plots on the right. Everything else is inherited unchanged.
+setting; the RF output state is to the right of the four fields. A "Settle time" field in the
+scan control dock (BocquelLabOdmrLogic.set_settle_time). Default view: control docks stacked on the
+left, plots on the right. Everything else is inherited unchanged.
 
 Copyright (c) 2021, the qudi developers. See the AUTHORS.md file at the top-level directory of this
 distribution and on <https://github.com/Ulm-IQO/qudi-iqo-modules/>
@@ -29,6 +30,7 @@ from PySide6 import QtCore, QtWidgets
 
 from qudi.core.statusvariable import StatusVar
 from qudi.util.units import ScaledFloat
+from qudi.util.widgets.scientific_spinbox import ScienDSpinBox
 from qudi.gui.odmr.odmrgui import OdmrGui
 
 _READBACK_TOOLTIP = ('Read back from the microwave source after the last change made by qudi.\n'
@@ -52,15 +54,19 @@ class BocquelLabOdmrGui(OdmrGui):
     _DEFAULT_LAYOUT_VERSION = 1
     _layout_version = StatusVar(name='default_layout_version', default=0)
 
+    sigSettleTimeChanged = QtCore.Signal(float)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._readback_power_label = None
         self._readback_frequency_label = None
         self._readback_rf_label = None
+        self._settle_time_spinbox = None
 
     def on_activate(self):
         super().on_activate()  # ends with show(), which restores the saved window layout
         self._add_readback_to_cw_dock()
+        self._add_settle_time_to_scan_dock()
         if self._layout_version != self._DEFAULT_LAYOUT_VERSION:
             self.restore_default_view()
             self._layout_version = self._DEFAULT_LAYOUT_VERSION
@@ -77,12 +83,68 @@ class BocquelLabOdmrGui(OdmrGui):
 
     def on_deactivate(self):
         logic = self._odmr_logic()
-        if hasattr(logic, 'sigMicrowaveReadback'):
-            try:
-                logic.sigMicrowaveReadback.disconnect(self._update_microwave_readback)
-            except (RuntimeError, TypeError):
-                pass
+        for signal, slot in (('sigMicrowaveReadback', self._update_microwave_readback),
+                             ('sigSettleTimeUpdated', self._update_settle_time),
+                             ('sigScanStateUpdated', self._settle_time_scan_state)):
+            if hasattr(logic, signal):
+                try:
+                    getattr(logic, signal).disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        try:
+            self.sigSettleTimeChanged.disconnect()
+        except (RuntimeError, TypeError):
+            pass
         super().on_deactivate()
+
+    def _add_settle_time_to_scan_dock(self) -> None:
+        """ "Settle time" row in the Runtime Parameters box of the scan control dock. Hidden if the
+        logic or its data scanner has no settle time.
+        """
+        logic = self._odmr_logic()
+        settle_time = getattr(logic, 'settle_time', None)
+        if settle_time is None:
+            return
+        grid = self._scan_control_dockwidget.runtime_spinbox.parentWidget().layout()
+        label = QtWidgets.QLabel('Settle time:')
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        spinbox = ScienDSpinBox()
+        spinbox.setSuffix('s')
+        spinbox.setRange(0.0, 1.0)
+        spinbox.setDecimals(3)
+        spinbox.setMinimumWidth(self._scan_control_dockwidget.runtime_spinbox.minimumWidth())
+        tooltip = ('Wait after each frequency step before counting.\n'
+                   'SG384 spec: frequency settles to within 1 ppm in < 8 ms.\n'
+                   'Shorter = faster sweeps; too short may broaden or shift the ODMR lines.')
+        for widget in (label, spinbox):
+            widget.setToolTip(tooltip)
+        spinbox.setValue(settle_time)
+        row = grid.rowCount()
+        grid.addWidget(label, row, 0)
+        grid.addWidget(spinbox, row, 1)
+        self._settle_time_spinbox = spinbox
+
+        spinbox.editingFinished.connect(self._settle_time_edited)
+        self.sigSettleTimeChanged.connect(logic.set_settle_time, QtCore.Qt.ConnectionType.QueuedConnection)
+        logic.sigSettleTimeUpdated.connect(self._update_settle_time, QtCore.Qt.ConnectionType.QueuedConnection)
+        logic.sigScanStateUpdated.connect(self._settle_time_scan_state, QtCore.Qt.ConnectionType.QueuedConnection)
+        spinbox.setEnabled(logic.module_state() == 'idle')
+
+    @QtCore.Slot()
+    def _settle_time_edited(self) -> None:
+        self.sigSettleTimeChanged.emit(float(self._settle_time_spinbox.value()))
+
+    @QtCore.Slot(object)
+    def _update_settle_time(self, seconds) -> None:
+        if self._settle_time_spinbox is not None and seconds is not None:
+            self._settle_time_spinbox.blockSignals(True)
+            self._settle_time_spinbox.setValue(seconds)
+            self._settle_time_spinbox.blockSignals(False)
+
+    @QtCore.Slot(bool)
+    def _settle_time_scan_state(self, running: bool) -> None:
+        if self._settle_time_spinbox is not None:
+            self._settle_time_spinbox.setEnabled(not running)
 
     def _add_readback_to_cw_dock(self) -> None:
         """ Rebuild the CW dock as a grid, re-using qudi's two spinboxes:

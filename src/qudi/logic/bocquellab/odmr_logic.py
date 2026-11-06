@@ -3,7 +3,8 @@
 BocquelLab extension of qudi's ODMR logic (qudi.logic.odmr_logic): after every action of this logic
 that changes the microwave source (CW on/off, scan start/stop) and at activation, the actual
 frequency, power and RF output state are read back from the source and sent to the GUI
-(sigMicrowaveReadback). There is no periodic polling. Everything else is inherited unchanged.
+(sigMicrowaveReadback). There is no periodic polling. Also forwards a settle time chosen in the GUI
+to the data scanner. Everything else is inherited unchanged.
 
 Copyright (c) 2021, the qudi developers. See the AUTHORS.md file at the top-level directory of this
 distribution and on <https://github.com/Ulm-IQO/qudi-iqo-modules/>
@@ -28,6 +29,7 @@ import datetime as dt
 from typing import Optional, Dict
 from PySide6 import QtCore
 
+from qudi.core.statusvariable import StatusVar
 from qudi.logic.odmr_logic import OdmrLogic
 
 
@@ -43,6 +45,10 @@ class BocquelLabOdmrLogic(OdmrLogic):
 
     Changes made on the generator front panel are only seen at the next read-back.
 
+    Settle time: if the data scanner provides settle_time / set_settle_time (BocquelLab NI stepped
+    ODMR counter), set_settle_time() changes it (not during a scan) and the value is saved and
+    re-applied at the next activation (sigSettleTimeUpdated).
+
     Example config for copy-paste:
 
     odmr_logic:
@@ -53,6 +59,10 @@ class BocquelLabOdmrLogic(OdmrLogic):
     """
 
     sigMicrowaveReadback = QtCore.Signal(dict)
+    sigSettleTimeUpdated = QtCore.Signal(object)  # float (s) or None if the data scanner has none
+
+    # settle time chosen in the GUI (s); None: keep the data scanner's configured value
+    _saved_settle_time = StatusVar(name='settle_time', default=None)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -60,7 +70,37 @@ class BocquelLabOdmrLogic(OdmrLogic):
 
     def on_activate(self):
         super().on_activate()
+        scanner = self._data_scanner()
+        if self._saved_settle_time is not None and hasattr(scanner, 'set_settle_time'):
+            try:
+                scanner.set_settle_time(self._saved_settle_time)
+            except Exception:
+                self.log.exception('Saved settle time not applied; using the configured value:')
         self.read_back_microwave()
+
+    @property
+    def settle_time(self) -> Optional[float]:
+        """ Wait after each frequency step before counting (s); None if not supported by the
+        data scanner (e.g. a dummy).
+        """
+        scanner = self._data_scanner()
+        return float(scanner.settle_time) if hasattr(scanner, 'settle_time') else None
+
+    @QtCore.Slot(float)
+    def set_settle_time(self, seconds: float) -> None:
+        with self._threadlock:
+            scanner = self._data_scanner()
+            if not hasattr(scanner, 'set_settle_time'):
+                self.log.error('The connected data scanner has no settle time.')
+            elif self.module_state() != 'idle':
+                self.log.error('Unable to change the settle time while an ODMR scan is running.')
+            else:
+                try:
+                    scanner.set_settle_time(seconds)
+                    self._saved_settle_time = float(scanner.settle_time)
+                except Exception:
+                    self.log.exception('Unable to set the settle time:')
+            self.sigSettleTimeUpdated.emit(self.settle_time)
 
     @property
     def last_microwave_readback(self) -> Optional[Dict]:

@@ -67,7 +67,8 @@ class NISteppedOdmrCounter(FiniteSamplingInputInterface):
             device_name: 'Dev1'
             channel_units:  # PFI inputs to count; qudi channel names are lower case ('pfi0')
                 'PFI0': 'c/s'
-            settle_time: 0.01  # s, wait after each frequency step (SG384 spec: < 8 ms)
+            settle_time: 0.01  # s, start value of the wait after each frequency step (SG384 spec:
+                               # < 8 ms); can be changed at run time (set_settle_time, ODMR GUI)
             sample_rate_limits: [1, 50000]  # optional, Hz (dwell 1 s ... 20 us)
             read_write_timeout: 10  # optional, s
         connect:
@@ -158,6 +159,20 @@ class NISteppedOdmrCounter(FiniteSamplingInputInterface):
     @property
     def frame_size(self):
         return self._frame_size
+
+    @property
+    def settle_time(self) -> float:
+        """ Wait after each frequency step before counting, in s. """
+        return self._settle_time
+
+    _MAX_SETTLE_TIME = 1.0  # s
+
+    def set_settle_time(self, seconds: float) -> None:
+        self._assert_idle('change the settle time')
+        seconds = float(seconds)
+        if not 0 <= seconds <= self._MAX_SETTLE_TIME:
+            raise ValueError(f'Settle time {seconds} s out of range [0, {self._MAX_SETTLE_TIME}] s')
+        self._settle_time = seconds
 
     @property
     def samples_in_buffer(self):
@@ -252,13 +267,14 @@ class NISteppedOdmrCounter(FiniteSamplingInputInterface):
         gate_task, count_tasks = None, dict()
         microwave = self._microwave()
         dwell = 1.0 / self._sample_rate
+        settle_time = self._settle_time  # fixed for this sweep
         try:
             gate_task, gate_counter, count_tasks = self._create_tasks(dwell)
             for _ in range(self._samples_target):
                 if self._abort.is_set():
                     break
                 microwave.trigger_scan_point()
-                self._wait(self._settle_time)
+                self._wait(settle_time)
                 start = {ch: task.read() for ch, task in count_tasks.items()}
                 gate_task.start()
                 gate_task.wait_until_done(timeout=dwell + self._rw_timeout)
