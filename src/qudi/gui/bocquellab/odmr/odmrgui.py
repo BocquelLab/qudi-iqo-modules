@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-BocquelLab extension of qudi's ODMR GUI (qudi.gui.odmr.odmrgui): adds a "Microwave readback" dock
-showing the frequency, power and RF output state read back from the microwave source after each
-change made by qudi (BocquelLabOdmrLogic.sigMicrowaveReadback). Everything else is inherited
+BocquelLab extension of qudi's ODMR GUI (qudi.gui.odmr.odmrgui): the CW control dock also shows the
+frequency, power and RF output state read back from the microwave source after each change made by
+qudi (BocquelLabOdmrLogic.sigMicrowaveReadback). Each read-back value sits directly below its
+setting; the RF output state is to the right of the four fields. Everything else is inherited
 unchanged.
 
 Copyright (c) 2021, the qudi developers. See the AUTHORS.md file at the top-level directory of this
@@ -22,71 +23,20 @@ You should have received a copy of the GNU Lesser General Public License along w
 If not, see <https://www.gnu.org/licenses/>.
 """
 
-__all__ = ['BocquelLabOdmrGui', 'MicrowaveReadbackDockWidget']
+__all__ = ['BocquelLabOdmrGui']
 
 from PySide6 import QtCore, QtWidgets
 
+from qudi.util.units import ScaledFloat
 from qudi.gui.odmr.odmrgui import OdmrGui
 
-
-class MicrowaveReadbackDockWidget(QtWidgets.QDockWidget):
-    """ Read-only display of the microwave source state as last read back by the logic. """
-
-    def __init__(self, parent=None):
-        super().__init__('Microwave readback', parent)
-        self.setObjectName('microwave_readback_dockWidget')
-        self.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
-                         QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable)
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QGridLayout()
-        widget.setLayout(layout)
-        self.setWidget(widget)
-
-        self.frequency_label = QtWidgets.QLabel('-')
-        self.power_label = QtWidgets.QLabel('-')
-        self.rf_label = QtWidgets.QLabel('-')
-        self.time_label = QtWidgets.QLabel('-')
-        for row, (caption, label) in enumerate((('Frequency:', self.frequency_label),
-                                                ('Power:', self.power_label),
-                                                ('RF output:', self.rf_label),
-                                                ('Read at:', self.time_label))):
-            caption_label = QtWidgets.QLabel(caption)
-            caption_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight |
-                                       QtCore.Qt.AlignmentFlag.AlignVCenter)
-            if label is not self.time_label:
-                font = label.font()
-                font.setBold(True)
-                font.setPointSize(font.pointSize() + 4)
-                label.setFont(font)
-            label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-            layout.addWidget(caption_label, row, 0)
-            layout.addWidget(label, row, 1)
-        layout.setColumnStretch(1, 1)
-        layout.setRowStretch(4, 1)
-        self.setToolTip('Values read back from the microwave source after each change made by qudi.\n'
-                        'Changes made on the generator front panel appear at the next read-back.')
-
-    def set_readback(self, readback: dict) -> None:
-        frequency = readback.get('frequency')
-        power = readback.get('power')
-        rf_on = readback.get('rf_on')
-        self.frequency_label.setText('?' if frequency is None else f'{frequency / 1e6:.6f} MHz')
-        self.power_label.setText('?' if power is None else f'{power:+.2f} dBm')
-        if rf_on is None:
-            self.rf_label.setText('?')
-            self.rf_label.setStyleSheet('')
-        else:
-            text = 'ON' if rf_on else 'OFF'
-            if not readback.get('rf_state_from_device', False):
-                text += ' (qudi state)'
-            self.rf_label.setText(text)
-            self.rf_label.setStyleSheet('color: #ff5555;' if rf_on else '')
-        self.time_label.setText(str(readback.get('time', '-')))
+_READBACK_TOOLTIP = ('Read back from the microwave source after the last change made by qudi.\n'
+                     'Changes made on the generator front panel appear at the next read-back.')
 
 
 class BocquelLabOdmrGui(OdmrGui):
-    """ qudi's OdmrGui plus a "Microwave readback" dock (needs BocquelLabOdmrLogic; with qudi's
-    original OdmrLogic the dock stays empty).
+    """ qudi's OdmrGui with the microwave read-back in the CW control dock (needs
+    BocquelLabOdmrLogic; with qudi's original OdmrLogic the read-back fields stay empty).
 
     Example config for copy-paste:
 
@@ -98,13 +48,14 @@ class BocquelLabOdmrGui(OdmrGui):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._readback_dockwidget = None
+        self._readback_power_label = None
+        self._readback_frequency_label = None
+        self._readback_rf_label = None
 
     def on_activate(self):
         super().on_activate()
+        self._add_readback_to_cw_dock()
         logic = self._odmr_logic()
-        self._readback_dockwidget = MicrowaveReadbackDockWidget(parent=self._mw)
-        self._place_readback_dock()
         if hasattr(logic, 'sigMicrowaveReadback'):
             logic.sigMicrowaveReadback.connect(self._update_microwave_readback,
                                                QtCore.Qt.ConnectionType.QueuedConnection)
@@ -124,21 +75,83 @@ class BocquelLabOdmrGui(OdmrGui):
                 pass
         super().on_deactivate()
 
-    def _place_readback_dock(self) -> None:
-        if self._readback_dockwidget is None:
-            return
-        self._readback_dockwidget.setFloating(False)
-        self._readback_dockwidget.show()
-        self._mw.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, self._readback_dockwidget)
-        # next to the CW controls
-        self._mw.splitDockWidget(self._cw_control_dockwidget, self._readback_dockwidget,
-                                 QtCore.Qt.Orientation.Horizontal)
+    def _add_readback_to_cw_dock(self) -> None:
+        """ Rebuild the CW dock as a grid, re-using qudi's two spinboxes:
 
-    @QtCore.Slot()
-    def restore_default_view(self):
-        super().restore_default_view()
-        self._place_readback_dock()
+            CW Power:  [spinbox]   CW Frequency: [spinbox]  | RF output
+            Read back:  value      Read back:     value     |    ON
+        """
+        dock = self._cw_control_dockwidget
+        power_spinbox = dock.cw_power_spinbox
+        frequency_spinbox = dock.cw_frequency_spinbox
+
+        def caption(text: str) -> QtWidgets.QLabel:
+            label = QtWidgets.QLabel(text)
+            label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            return label
+
+        def value_label() -> QtWidgets.QLabel:
+            label = QtWidgets.QLabel('-')
+            label.setToolTip(_READBACK_TOOLTIP)
+            label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+            font = label.font()
+            font.setBold(True)
+            label.setFont(font)
+            return label
+
+        self._readback_power_label = value_label()
+        self._readback_frequency_label = value_label()
+        self._readback_rf_label = value_label()
+        self._readback_rf_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        font = self._readback_rf_label.font()
+        font.setPointSize(font.pointSize() + 4)
+        self._readback_rf_label.setFont(font)
+        rf_caption = QtWidgets.QLabel('RF output')
+        rf_caption.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        rf_caption.setToolTip(_READBACK_TOOLTIP)
+
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QGridLayout()
+        layout.setContentsMargins(1, 1, 1, 1)
+        widget.setLayout(layout)
+        layout.addWidget(caption('CW Power:'), 0, 0)
+        layout.addWidget(power_spinbox, 0, 1)  # re-parented from qudi's dock widget
+        layout.addWidget(caption('CW Frequency:'), 0, 2)
+        layout.addWidget(frequency_spinbox, 0, 3)
+        layout.addWidget(caption('Read back:'), 1, 0)
+        layout.addWidget(self._readback_power_label, 1, 1)
+        layout.addWidget(caption('Read back:'), 1, 2)
+        layout.addWidget(self._readback_frequency_label, 1, 3)
+        separator = QtWidgets.QFrame()
+        separator.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        layout.addWidget(separator, 0, 4, 2, 1)
+        layout.addWidget(rf_caption, 0, 5)
+        layout.addWidget(self._readback_rf_label, 1, 5)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
+        widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
+        old_widget = dock.widget()
+        dock.setWidget(widget)
+        if old_widget is not None:
+            old_widget.deleteLater()  # empty now: its two spinboxes moved to the new grid
 
     @QtCore.Slot(dict)
     def _update_microwave_readback(self, readback: dict) -> None:
-        self._readback_dockwidget.set_readback(readback)
+        frequency = readback.get('frequency')
+        power = readback.get('power')
+        rf_on = readback.get('rf_on')
+        self._readback_power_label.setText('?' if power is None else f'{power:.2f} dBm')
+        self._readback_frequency_label.setText(
+            '?' if frequency is None else f'{ScaledFloat(frequency):.6r}Hz'
+        )
+        if rf_on is None:
+            self._readback_rf_label.setText('?')
+            self._readback_rf_label.setStyleSheet('')
+        else:
+            text = 'ON' if rf_on else 'OFF'
+            if not readback.get('rf_state_from_device', False):
+                text += '*'
+                self._readback_rf_label.setToolTip(_READBACK_TOOLTIP + '\n* qudi state, not read from the device.')
+            self._readback_rf_label.setText(text)
+            self._readback_rf_label.setStyleSheet('color: #ff5555;' if rf_on else '')
