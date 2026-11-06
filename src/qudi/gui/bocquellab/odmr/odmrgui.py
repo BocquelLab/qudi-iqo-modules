@@ -62,6 +62,7 @@ class BocquelLabOdmrGui(OdmrGui):
         self._readback_frequency_label = None
         self._readback_rf_label = None
         self._settle_time_spinbox = None
+        self._applied_settle_time = None  # last value confirmed by the logic
 
     def on_activate(self):
         super().on_activate()  # ends with show(), which restores the saved window layout
@@ -119,6 +120,7 @@ class BocquelLabOdmrGui(OdmrGui):
         for widget in (label, spinbox):
             widget.setToolTip(tooltip)
         spinbox.setValue(settle_time)
+        self._applied_settle_time = float(settle_time)
         row = grid.rowCount()
         grid.addWidget(label, row, 0)
         grid.addWidget(spinbox, row, 1)
@@ -130,21 +132,44 @@ class BocquelLabOdmrGui(OdmrGui):
         logic.sigScanStateUpdated.connect(self._settle_time_scan_state, QtCore.Qt.ConnectionType.QueuedConnection)
         spinbox.setEnabled(logic.module_state() == 'idle')
 
+    @QtCore.Slot(bool)
+    def run_stop_odmr(self, is_checked):
+        if is_checked:
+            self._settle_time_edited()  # apply a typed but not yet confirmed value before the start
+        super().run_stop_odmr(is_checked)
+
+    @QtCore.Slot()
+    def resume_odmr(self):
+        self._settle_time_edited()
+        super().resume_odmr()
+
     @QtCore.Slot()
     def _settle_time_edited(self) -> None:
-        self.sigSettleTimeChanged.emit(float(self._settle_time_spinbox.value()))
+        # editingFinished also fires when the field loses focus, e.g. when it is disabled at scan
+        # start while the cursor is still in it: only send real changes, never from a locked field.
+        spinbox = self._settle_time_spinbox
+        if spinbox is None or not spinbox.isEnabled():
+            return
+        value = float(spinbox.value())
+        if self._applied_settle_time is not None and abs(value - self._applied_settle_time) < 1e-9:
+            return
+        self.sigSettleTimeChanged.emit(value)
 
     @QtCore.Slot(object)
     def _update_settle_time(self, seconds) -> None:
         if self._settle_time_spinbox is not None and seconds is not None:
+            self._applied_settle_time = float(seconds)
             self._settle_time_spinbox.blockSignals(True)
             self._settle_time_spinbox.setValue(seconds)
             self._settle_time_spinbox.blockSignals(False)
 
     @QtCore.Slot(bool)
     def _settle_time_scan_state(self, running: bool) -> None:
-        if self._settle_time_spinbox is not None:
-            self._settle_time_spinbox.setEnabled(not running)
+        spinbox = self._settle_time_spinbox
+        if spinbox is not None:
+            spinbox.setEnabled(not running)
+            if running and self._applied_settle_time is not None:
+                self._update_settle_time(self._applied_settle_time)  # always show the value in use
 
     def _add_readback_to_cw_dock(self) -> None:
         """ Rebuild the CW dock as a grid, re-using qudi's two spinboxes:

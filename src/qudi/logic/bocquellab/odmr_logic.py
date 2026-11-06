@@ -92,6 +92,8 @@ class BocquelLabOdmrLogic(OdmrLogic):
             scanner = self._data_scanner()
             if not hasattr(scanner, 'set_settle_time'):
                 self.log.error('The connected data scanner has no settle time.')
+            elif abs(float(seconds) - float(scanner.settle_time)) < 1e-9:
+                pass  # unchanged: nothing to do, also during a scan
             elif self.module_state() != 'idle':
                 self.log.error('Unable to change the settle time while an ODMR scan is running.')
             else:
