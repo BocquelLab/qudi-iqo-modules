@@ -27,6 +27,7 @@ __all__ = ['BocquelLabOdmrGui']
 
 from PySide6 import QtCore, QtWidgets
 
+from qudi.core.statusvariable import StatusVar
 from qudi.util.units import ScaledFloat
 from qudi.gui.odmr.odmrgui import OdmrGui
 
@@ -46,6 +47,11 @@ class BocquelLabOdmrGui(OdmrGui):
             odmr_logic: 'odmr_logic'
     """
 
+    # Bump when the default layout changes: a window layout saved by an older version is then
+    # replaced once by the new default view (afterwards qudi keeps restoring the user's layout).
+    _DEFAULT_LAYOUT_VERSION = 1
+    _layout_version = StatusVar(name='default_layout_version', default=0)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._readback_power_label = None
@@ -53,8 +59,11 @@ class BocquelLabOdmrGui(OdmrGui):
         self._readback_rf_label = None
 
     def on_activate(self):
-        super().on_activate()
+        super().on_activate()  # ends with show(), which restores the saved window layout
         self._add_readback_to_cw_dock()
+        if self._layout_version != self._DEFAULT_LAYOUT_VERSION:
+            self.restore_default_view()
+            self._layout_version = self._DEFAULT_LAYOUT_VERSION
         logic = self._odmr_logic()
         if hasattr(logic, 'sigMicrowaveReadback'):
             logic.sigMicrowaveReadback.connect(self._update_microwave_readback,
