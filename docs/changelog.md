@@ -28,6 +28,7 @@
 - Added `gaussian unrestricted` and `maximum` optimization methods to `ScanningOptimizeLogic`
 - Supported pyvisa for coherent obis laser
 - Added Magnet Toolchain
+- Added BocquelLab time series GUI and logic (`gui.bocquellab.time_series`, `logic.bocquellab.time_series_reader_logic`): channel display names from config (value displays, dialogs, saved column headers), count rates in kcps with all APDs on one axis, one value display per channel, optional APD sum trace and display, newly configured channels switched on automatically, moving average saved in trace snapshots
 - Added `hardware.laser.cobolt_06_laser.Cobolt06Laser`: Cobolt 06-01 Series lasers (via `pycobolt`) for the `SimpleLaserInterface` laser toolchain
 
 ### Other
