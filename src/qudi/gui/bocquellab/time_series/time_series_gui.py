@@ -36,7 +36,7 @@ __all__ = ['BocquelLabTimeSeriesGui', 'format_count_rate']
 
 import pyqtgraph as pg
 import numpy as np
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 from typing import Union, Dict, Tuple, Optional, List
 
 from qudi.core.statusvariable import StatusVar
@@ -144,6 +144,8 @@ class BocquelLabTimeSeriesGui(GuiBase):
     _visible_traces = StatusVar(name='visible_traces', default=dict())
     _current_value_channel_precision = StatusVar(name='current_value_channel_precision',
                                                  default=dict())
+    # value displays show the moving average (True) or the latest raw value (False)
+    _show_average_values = StatusVar(name='show_average_values', default=True)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -157,6 +159,7 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self.sum_curve = None
         self._value_displays = dict()
         self._displays_widget = None
+        self._average_values_action = None
         self._sum_channels = list()
         self._sum_on_left_axis = True
 
@@ -257,6 +260,7 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self._mw.restore_default_view_action.triggered.connect(self._restore_default_view)
         self._mw.trace_view_selection_action.triggered.connect(self._exec_trace_view_dialog)
         self._mw.channel_settings_action.triggered.connect(self._exec_channel_settings_dialog)
+        self._average_values_action.toggled[bool].connect(self._average_values_toggled)
 
         # Connect signals to/from logic
         self.sigStartCounter.connect(logic.start_reading, QtCore.Qt.ConnectionType.QueuedConnection)
@@ -307,6 +311,7 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self._mw.restore_default_view_action.triggered.disconnect()
         self._mw.trace_view_selection_action.triggered.disconnect()
         self._mw.channel_settings_action.triggered.disconnect()
+        self._average_values_action.toggled.disconnect()
         self.sigStartCounter.disconnect()
         self.sigStopCounter.disconnect()
         self.sigStartRecording.disconnect()
@@ -373,6 +378,27 @@ class BocquelLabTimeSeriesGui(GuiBase):
         displays_layout.setContentsMargins(0, 0, 0, 0)
         self._displays_widget.setLayout(displays_layout)
         layout.addWidget(self._displays_widget, 1, 0, 1, 2)
+
+        # On/off switch: average or raw value in the displays (toolbar and View menu)
+        self._average_values_action = QtGui.QAction('Average values', self._mw)
+        self._average_values_action.setCheckable(True)
+        self._average_values_action.setChecked(bool(self._show_average_values))
+        self._average_values_action.setToolTip(
+            'Value displays: moving average (on) or latest raw value (off)'
+        )
+        self._mw.toolbar.addSeparator()
+        self._mw.toolbar.addAction(self._average_values_action)
+        for menu_action in self._mw.menuBar().actions():
+            if menu_action.text() == 'View':
+                menu_action.menu().addSeparator()
+                menu_action.menu().addAction(self._average_values_action)
+                break
+
+    @QtCore.Slot(bool)
+    def _average_values_toggled(self, checked: bool) -> None:
+        self._show_average_values = bool(checked)
+        logic = self._time_series_logic_con()
+        self.update_data(*logic.trace_data, *logic.averaged_trace_data)
 
     def _rebuild_value_displays(self, keys: List[str]) -> None:
         """ One display per key (channel name or _SUM_KEY), side by side. """
@@ -526,12 +552,13 @@ class BocquelLabTimeSeriesGui(GuiBase):
             for channel, y_arr in smooth_data.items():
                 self.averaged_curves[channel].setData(y=y_arr, x=smooth_time)
 
-        # Value displays: moving average when available, raw value otherwise
+        # Value displays: moving average when switched on and available, raw value otherwise
+        show_average = bool(self._show_average_values) and smooth_data is not None
         for key, display in self._value_displays.items():
             try:
                 if key == _SUM_KEY:
                     continue
-                use_average = smooth_data is not None and key in smooth_data
+                use_average = show_average and key in smooth_data
                 val = smooth_data[key][-1] if use_average else data[key][-1]
                 display.set_caption(self._name(key, averaged=use_average))
                 display.value_label.setText(self._format_value(val, key))
@@ -541,17 +568,22 @@ class BocquelLabTimeSeriesGui(GuiBase):
         # Sum of the count-rate channels: averages if all of them are averaged, raw otherwise
         if self._sum_channels and data is not None:
             try:
-                use_average = smooth_data is not None and all(ch in smooth_data for ch in self._sum_channels)
-                if use_average:
+                # trace: sum of the averages when all summed channels are averaged
+                avg_available = smooth_data is not None and all(ch in smooth_data for ch in self._sum_channels)
+                if avg_available:
                     x, source = smooth_time, smooth_data
                 else:
                     x, source = data_time, data
                 y_sum = np.sum([source[ch] for ch in self._sum_channels], axis=0)
                 self.sum_curve.setData(y=y_sum, x=x)
+                # display: follows the "Average values" switch like the channel displays
                 display = self._value_displays.get(_SUM_KEY)
                 if display is not None:
+                    use_average = avg_available and bool(self._show_average_values)
+                    source = smooth_data if use_average else data
+                    value = sum(source[ch][-1] for ch in self._sum_channels)
                     display.set_caption(self._sum_name(averaged=use_average))
-                    display.value_label.setText(self._format_value(y_sum[-1], None))
+                    display.value_label.setText(self._format_value(value, None))
             except (TypeError, IndexError, KeyError, ValueError):
                 pass
 
