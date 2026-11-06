@@ -4,13 +4,16 @@ BocquelLab copy of qudi's time series GUI (gui/time_series/time_series_gui.py).
 
 Differences to the original:
 - channels are shown with display names (e.g. 'APD1 (pfi0)', 'APD1 (pfi0) average') taken from
-  the logic option channel_display_names, in the plot legend (new), the current-value channel
-  list, the axis labels and the settings dialogs. Internally, channels keep their hardware names.
-- count-rate channels (unit counts/s) are shown in kcps on the plot axis, and in cps / kcps with a
-  sensible number of digits in the big current-value display.
-- the current-value channel falls back to the option default_current_value_channel when no valid
-  choice is saved.
-The main window and dialogs are reused from qudi unchanged.
+  the logic option channel_display_names (axis labels, value displays, settings dialogs).
+  Internally, channels keep their hardware names.
+- all count-rate channels (unit counts/s) share one y-axis in kcps, so several APDs are plotted
+  together. Another unit (e.g. V) gets the right axis.
+- instead of qudi's single "current value channel" selector, one big value display per active
+  channel, side by side (the moving average when it is enabled, the raw value otherwise). Count
+  rates are shown in cps / kcps with a sensible number of digits.
+- optional sum of all count-rate channels (e.g. APD1 + APD2) as extra trace and value display,
+  switched on with the option show_sum.
+The main window and dialogs are reused from qudi unchanged (the selector row is hidden).
 
 Copyright (c) 2021, the qudi developers. See the AUTHORS.md file at the top-level directory of this
 distribution and on <https://github.com/Ulm-IQO/qudi-iqo-modules/>
@@ -34,7 +37,7 @@ __all__ = ['BocquelLabTimeSeriesGui', 'format_count_rate']
 import pyqtgraph as pg
 import numpy as np
 from PySide6 import QtCore, QtWidgets
-from typing import Union, Dict, Tuple, Optional
+from typing import Union, Dict, Tuple, Optional, List
 
 from qudi.core.statusvariable import StatusVar
 from qudi.core.connector import Connector
@@ -48,10 +51,10 @@ from qudi.gui.time_series.settings_dialog import TraceViewDialog, ChannelSetting
 from qudi.interface.data_instream_interface import SampleTiming
 from qudi.logic.time_series_reader_logic import TimeSeriesReaderLogic
 
-# channel units treated as count rates (shown in cps / kcps)
+# channel units treated as count rates (shown in cps / kcps, summed by show_sum)
 COUNT_RATE_UNITS = ('counts/s', 'c/s', 'cps')
-_AVERAGE_PREFIX = 'average '  # internal key of an averaged channel: 'average <channel>'
-_NONE_KEY = 'None'
+_SUM_KEY = '__sum__'  # key of the sum display / curve (never a hardware channel name)
+_SUM_PEN_COLOR = (215, 215, 215)  # light grey: distinct from the channel colours
 
 
 def format_count_rate(value: float, decimals: Optional[int] = None) -> str:
@@ -72,13 +75,46 @@ def format_count_rate(value: float, decimals: Optional[int] = None) -> str:
     return f'{value / 1e3:.0f} kcps'
 
 
+class _ValueDisplay(QtWidgets.QWidget):
+    """ Caption (channel name) above a big number. """
+
+    def __init__(self, caption: str, point_size: int, parent=None):
+        super().__init__(parent)
+        self.caption_label = QtWidgets.QLabel(caption)
+        self.caption_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        font = self.caption_label.font()
+        font.setPointSize(12)
+        self.caption_label.setFont(font)
+        self.value_label = QtWidgets.QLabel('-')
+        self.value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        font = self.value_label.font()
+        font.setBold(True)
+        font.setPointSize(point_size)
+        self.value_label.setFont(font)
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.caption_label)
+        layout.addWidget(self.value_label)
+        self.setLayout(layout)
+
+    def set_caption(self, text: str) -> None:
+        if self.caption_label.text() != text:
+            self.caption_label.setText(text)
+
+
 class BocquelLabTimeSeriesGui(GuiBase):
     """
-    BocquelLab GUI for TimeSeriesReaderLogic: display names, legend, count rates in kcps.
+    BocquelLab GUI for TimeSeriesReaderLogic: display names, all APDs on one kcps axis, one big
+    value display per channel, optional sum of the count-rate channels.
 
     Display names come from the logic option channel_display_names
     (bocquellab.time_series_reader_logic.BocquelLabTimeSeriesReaderLogic). With qudi's original
     logic, hardware channel names are shown.
+
+    The sum (trace + value display) appears only with show_sum: True and at least two active
+    count-rate channels. It is the sum of the moving averages when all summed channels are
+    averaged, of the raw values otherwise. It is display only (not saved).
 
     Example config for copy-paste:
 
@@ -86,7 +122,8 @@ class BocquelLabTimeSeriesGui(GuiBase):
         module.Class: 'bocquellab.time_series.time_series_gui.BocquelLabTimeSeriesGui'
         options:
             use_antialias: True  # optional, set to False if you encounter performance issues
-            default_current_value_channel: 'average pfi0'  # optional, '<channel>' or 'average <channel>'
+            show_sum: False  # optional, sum of all count-rate channels as extra trace and display
+            sum_display_name: 'APD1 + APD2'  # optional, default: channel names joined with ' + '
         connect:
             _time_series_logic_con: <TimeSeriesReaderLogic_name>
     """
@@ -96,8 +133,8 @@ class BocquelLabTimeSeriesGui(GuiBase):
 
     # declare ConfigOptions
     _use_antialias = ConfigOption('use_antialias', default=True, constructor=lambda x: bool(x))
-    _default_current_value_channel = ConfigOption('default_current_value_channel', default=None,
-                                                  missing='nothing')
+    _show_sum = ConfigOption('show_sum', default=False, missing='nothing', constructor=lambda x: bool(x))
+    _sum_display_name = ConfigOption('sum_display_name', default=None, missing='nothing')
 
     sigStartCounter = QtCore.Signal()
     sigStopCounter = QtCore.Signal()
@@ -106,9 +143,6 @@ class BocquelLabTimeSeriesGui(GuiBase):
     sigTraceSettingsChanged = QtCore.Signal(dict)
     sigChannelSettingsChanged = QtCore.Signal(list, list)
 
-    # Internal key of the current-value channel: 'None', '<channel>' or 'average <channel>'.
-    # None (nothing saved yet) selects default_current_value_channel.
-    _current_value_channel = StatusVar(name='current_value_channel', default=None)
     _visible_traces = StatusVar(name='visible_traces', default=dict())
     _current_value_channel_precision = StatusVar(name='current_value_channel_precision',
                                                  default=dict())
@@ -119,10 +153,14 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self._streamer_constraints = None
         self._mw = None
         self._vb = None
-        self._legend = None
         self._display_names = dict()
         self.curves = dict()
         self.averaged_curves = dict()
+        self.sum_curve = None
+        self._value_displays = dict()
+        self._displays_widget = None
+        self._sum_channels = list()
+        self._sum_on_left_axis = True
 
         self._channels_per_axis = [set(), set()]
 
@@ -144,6 +182,8 @@ class BocquelLabTimeSeriesGui(GuiBase):
             ch: self._current_value_channel_precision.get(ch, None) for ch in all_channels
         }
 
+        self._replace_current_value_selector()
+
         # Configure PlotWidget
         if self._streamer_constraints.sample_timing == SampleTiming.RANDOM:
             self._mw.trace_plot_widget.setLabel('bottom', 'Sample')
@@ -164,8 +204,6 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self._mw.trace_plot_widget.plotItem.vb.sigResized.connect(self.__update_viewbox_sync)
 
         self._mw.trace_plot_widget.disableAutoRange(axis='x')
-        # Legend: entries are managed in _toggle_channel_data_plot (curves on both view boxes)
-        self._legend = self._mw.trace_plot_widget.addLegend()
 
         self.curves = dict()
         self.averaged_curves = dict()
@@ -193,6 +231,11 @@ class BocquelLabTimeSeriesGui(GuiBase):
                                                downsampleMethod='subsample',
                                                autoDownsample=True,
                                                antialias=self._use_antialias)
+        self.sum_curve = pg.PlotCurveItem(pen=pg.mkPen(_SUM_PEN_COLOR, cosmetic=True),
+                                          clipToView=True,
+                                          downsampleMethod='subsample',
+                                          autoDownsample=True,
+                                          antialias=self._use_antialias)
 
         # Connecting user interactions
         self._mw.toggle_trace_action.triggered[bool].connect(self._trace_toggled)
@@ -210,9 +253,6 @@ class BocquelLabTimeSeriesGui(GuiBase):
         )
         self._mw.settings_dockwidget.moving_average_spinbox.editingFinished.connect(
             self._trace_settings_changed
-        )
-        self._mw.current_value_combobox.currentIndexChanged.connect(
-            self._current_value_channel_changed
         )
 
         # Connect the default view and settings actions
@@ -242,7 +282,6 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self.update_trace_settings(logic.trace_settings)
         self.update_data(*logic.trace_data, *logic.averaged_trace_data)
         self._apply_trace_view_settings(self.trace_view_settings)
-        self._current_value_channel_changed()
         self.show()
 
     def show(self):
@@ -267,7 +306,6 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self._mw.settings_dockwidget.data_rate_spinbox.editingFinished.disconnect()
         self._mw.settings_dockwidget.oversampling_spinbox.editingFinished.disconnect()
         self._mw.settings_dockwidget.moving_average_spinbox.editingFinished.disconnect()
-        self._mw.current_value_combobox.currentIndexChanged.disconnect()
         self._mw.restore_default_view_action.triggered.disconnect()
         self._mw.trace_view_selection_action.triggered.disconnect()
         self._mw.channel_settings_action.triggered.disconnect()
@@ -290,6 +328,13 @@ class BocquelLabTimeSeriesGui(GuiBase):
         name = self._display_names.get(channel, channel)
         return f'{name} average' if averaged else name
 
+    def _sum_name(self, averaged: bool = False) -> str:
+        if self._sum_display_name:
+            name = str(self._sum_display_name)
+        else:
+            name = ' + '.join(self._name(ch) for ch in self._sum_channels)
+        return f'{name} average' if averaged else name
+
     @staticmethod
     def _is_count_rate(unit: str) -> bool:
         return unit in COUNT_RATE_UNITS
@@ -308,8 +353,59 @@ class BocquelLabTimeSeriesGui(GuiBase):
             axis_item.enableAutoSIPrefix(True)
             self._mw.trace_plot_widget.setLabel(axis, text, units=unit)
 
-    def _axis_title(self, unit: str) -> str:
+    def _axis_title(self, channels, unit: str) -> str:
+        if len(channels) == 1:
+            return self._name(channels[0])
         return 'Count rate' if self._is_count_rate(unit) else 'Signal'
+
+    # ------------------------------------------------------------------ value displays
+    def _replace_current_value_selector(self) -> None:
+        """ Hide qudi's selector row and big label; put a row of value displays in their place. """
+        self._value_displays = dict()  # widgets of a previous activation died with its window
+        layout = self._mw.centralWidget().layout()
+        selector_caption = layout.itemAtPosition(0, 0)
+        for widget in (selector_caption.widget() if selector_caption else None,
+                       self._mw.current_value_combobox,
+                       self._mw.current_value_label):
+            if widget is not None:
+                layout.removeWidget(widget)
+                widget.hide()
+        self._displays_widget = QtWidgets.QWidget()
+        displays_layout = QtWidgets.QHBoxLayout()
+        displays_layout.setContentsMargins(0, 0, 0, 0)
+        self._displays_widget.setLayout(displays_layout)
+        layout.addWidget(self._displays_widget, 1, 0, 1, 2)
+
+    def _rebuild_value_displays(self, keys: List[str]) -> None:
+        """ One display per key (channel name or _SUM_KEY), side by side. """
+        layout = self._displays_widget.layout()
+        for display in self._value_displays.values():
+            layout.removeWidget(display)
+            display.deleteLater()
+        self._value_displays = dict()
+        point_size = 60 if len(keys) <= 1 else 44
+        for key in keys:
+            caption = self._sum_name() if key == _SUM_KEY else self._name(key)
+            display = _ValueDisplay(caption, point_size)
+            layout.addWidget(display, 1)
+            self._value_displays[key] = display
+
+    def _format_value(self, val, channel: Optional[str]) -> str:
+        """ channel None: sum of count-rate channels. """
+        constraints = self._streamer_constraints
+        if channel is None:
+            return format_count_rate(float(val))
+        ch_unit = constraints.channel_units[channel]
+        precision = self._current_value_channel_precision[channel]
+        if self._is_count_rate(ch_unit):
+            return format_count_rate(float(val), precision)
+        if np.isnan(val):
+            return f'{val} {ch_unit}'
+        if is_integer_type(constraints.data_type):
+            return f'{val:,d} {ch_unit}'
+        if precision is None:
+            return f'{ScaledFloat(val):.5r}{ch_unit}'
+        return f'{val:,.{precision:d}f} {ch_unit}'
 
     # ------------------------------------------------------------------ dialogs
     @property
@@ -368,94 +464,51 @@ class BocquelLabTimeSeriesGui(GuiBase):
             [ch for ch, (_, averaged) in setting.items() if averaged]
         )
 
-    # ------------------------------------------------------------------ current value channel
-    def _select_current_value_channel(self) -> None:
-        """ Select the saved channel; if it is not available, default_current_value_channel;
-        otherwise 'None'. Signals of the combobox must be blocked by the caller.
-        """
-        combobox = self._mw.current_value_combobox
-        index = -1
-        if self._current_value_channel is not None:
-            index = combobox.findData(str(self._current_value_channel))
-        if index < 0 and self._default_current_value_channel is not None:
-            index = combobox.findData(str(self._default_current_value_channel))
-        combobox.setCurrentIndex(max(index, 0))
-
+    # ------------------------------------------------------------------ channels, axes, data
     @QtCore.Slot(list, list)
     def update_channel_settings(self, enabled, averaged):
-        # Update combobox: text = display name, item data = internal key
-        combobox = self._mw.current_value_combobox
-        combobox.blockSignals(True)
-        try:
-            combobox.clear()
-            combobox.addItem('None', _NONE_KEY)
-            for ch in averaged:
-                if ch in enabled:
-                    combobox.addItem(self._name(ch, averaged=True), f'{_AVERAGE_PREFIX}{ch}')
-            for ch in enabled:
-                combobox.addItem(self._name(ch), ch)
-            self._select_current_value_channel()
-        finally:
-            combobox.blockSignals(False)
-        self._current_value_channel_changed()
-
-        # Update plot widget axes
         self._streamer_constraints = self._time_series_logic_con().streamer_constraints
         channel_units = self._streamer_constraints.channel_units
-        different_units = list({unit for ch, unit in channel_units.items() if ch in enabled})
-        self._channels_per_axis = list()
-        if len(different_units) == 2:
+        enabled = list(enabled)
+
+        # Sum of all active count-rate channels (only with show_sum and at least 2 of them)
+        count_channels = [ch for ch in enabled if self._is_count_rate(channel_units[ch])]
+        self._sum_channels = count_channels if (self._show_sum and len(count_channels) > 1) else list()
+
+        # Value displays: one per active channel, then the sum
+        self._rebuild_value_displays(enabled + ([_SUM_KEY] if self._sum_channels else []))
+
+        # Axes: channels with the same unit share an axis (all APDs plotted together)
+        units = list(dict.fromkeys(channel_units[ch] for ch in enabled))
+        if any(self._is_count_rate(u) for u in units):
+            # count rates always on the left axis
+            units.sort(key=lambda u: not self._is_count_rate(u))
+        if len(units) == 2:
             self._mw.trace_plot_widget.showAxis('right')
             self._channels_per_axis = [
-                tuple(ch for ch in enabled if channel_units[ch] == different_units[0]),
-                tuple(ch for ch in enabled if channel_units[ch] == different_units[1])
+                tuple(ch for ch in enabled if channel_units[ch] == units[0]),
+                tuple(ch for ch in enabled if channel_units[ch] == units[1])
             ]
-            if len(enabled) == 2:
-                self._set_axis_label('left', self._name(self._channels_per_axis[0][0]), different_units[0])
-                self._set_axis_label('right', self._name(self._channels_per_axis[1][0]), different_units[1])
-            else:
-                self._set_axis_label('left', self._axis_title(different_units[0]), different_units[0])
-                self._set_axis_label('right', self._axis_title(different_units[1]), different_units[1])
-        elif len(different_units) > 2:
+            self._set_axis_label('left', self._axis_title(self._channels_per_axis[0], units[0]), units[0])
+            self._set_axis_label('right', self._axis_title(self._channels_per_axis[1], units[1]), units[1])
+        elif len(units) > 2:
             self._mw.trace_plot_widget.hideAxis('right')
             self._channels_per_axis = [tuple(enabled), tuple()]
             self._set_axis_label('left', 'Signal', '')
-        elif len(enabled) == 2:
-            # same unit on both channels: as in qudi, one channel per y-axis (independent scaling)
-            self._mw.trace_plot_widget.hideAxis('right')
-            self._channels_per_axis = [(enabled[0],), (enabled[1],)]
-            self._set_axis_label('left', self._name(enabled[0]), channel_units[enabled[0]])
-            self._set_axis_label('right', self._name(enabled[1]), channel_units[enabled[1]])
-        elif len(enabled) > 2:
+        elif len(units) == 1:
             self._mw.trace_plot_widget.hideAxis('right')
             self._channels_per_axis = [tuple(enabled), tuple()]
-            self._set_axis_label('left', self._axis_title(different_units[0]), different_units[0])
-        elif len(enabled) == 1:
-            self._mw.trace_plot_widget.hideAxis('right')
-            self._channels_per_axis = [tuple(enabled), tuple()]
-            self._set_axis_label('left', self._name(enabled[0]), different_units[0])
+            self._set_axis_label('left', self._axis_title(enabled, units[0]), units[0])
         else:
             self._mw.trace_plot_widget.hideAxis('right')
             self._channels_per_axis = [tuple(), tuple()]
+        self._sum_on_left_axis = bool(self._sum_channels) and self._sum_channels[0] in self._channels_per_axis[0]
 
         for ch in channel_units:
             show_channel = (ch in enabled) and self._visible_traces[ch][0]
             show_average = (ch in enabled) and (ch in averaged) and self._visible_traces[ch][1]
             self._toggle_channel_data_plot(ch, show_channel, show_average)
-
-    def _format_value(self, val, channel: str) -> str:
-        constraints = self._streamer_constraints
-        ch_unit = constraints.channel_units[channel]
-        precision = self._current_value_channel_precision[channel]
-        if self._is_count_rate(ch_unit):
-            return format_count_rate(float(val), precision)
-        if np.isnan(val):
-            return f'{val} {ch_unit}'
-        if is_integer_type(constraints.data_type):
-            return f'{val:,d} {ch_unit}'
-        if precision is None:
-            return f'{ScaledFloat(val):.5r}{ch_unit}'
-        return f'{val:,.{precision:d}f} {ch_unit}'
+        self._toggle_sum_plot()
 
     @QtCore.Slot(object, object, object, object)
     def update_data(self, data_time, data, smooth_time, smooth_data):
@@ -474,17 +527,33 @@ class BocquelLabTimeSeriesGui(GuiBase):
             for channel, y_arr in smooth_data.items():
                 self.averaged_curves[channel].setData(y=y_arr, x=smooth_time)
 
-        key = self._mw.current_value_combobox.currentData()
-        if key and key != _NONE_KEY:
+        # Value displays: moving average when available, raw value otherwise
+        for key, display in self._value_displays.items():
             try:
-                if key.startswith(_AVERAGE_PREFIX):
-                    channel = key[len(_AVERAGE_PREFIX):]
-                    val = smooth_data[channel][-1]
-                else:
-                    channel = key
-                    val = data[channel][-1]
-                self._mw.current_value_label.setText(self._format_value(val, channel))
+                if key == _SUM_KEY:
+                    continue
+                use_average = smooth_data is not None and key in smooth_data
+                val = smooth_data[key][-1] if use_average else data[key][-1]
+                display.set_caption(self._name(key, averaged=use_average))
+                display.value_label.setText(self._format_value(val, key))
             except (TypeError, IndexError, KeyError):
+                pass
+
+        # Sum of the count-rate channels: averages if all of them are averaged, raw otherwise
+        if self._sum_channels and data is not None:
+            try:
+                use_average = smooth_data is not None and all(ch in smooth_data for ch in self._sum_channels)
+                if use_average:
+                    x, source = smooth_time, smooth_data
+                else:
+                    x, source = data_time, data
+                y_sum = np.sum([source[ch] for ch in self._sum_channels], axis=0)
+                self.sum_curve.setData(y=y_sum, x=x)
+                display = self._value_displays.get(_SUM_KEY)
+                if display is not None:
+                    display.set_caption(self._sum_name(averaged=use_average))
+                    display.value_label.setText(self._format_value(y_sum[-1], None))
+            except (TypeError, IndexError, KeyError, ValueError):
                 pass
 
     @QtCore.Slot(bool)
@@ -537,17 +606,6 @@ class BocquelLabTimeSeriesGui(GuiBase):
         self.sigTraceSettingsChanged.emit(settings)
 
     @QtCore.Slot()
-    def _current_value_channel_changed(self):
-        key = self._mw.current_value_combobox.currentData()
-        if key is None or key == _NONE_KEY:
-            self._mw.current_value_label.setVisible(False)
-            self._mw.current_value_label.setText('0')
-        else:
-            self._mw.current_value_label.setVisible(True)
-        if key is not None:
-            self._current_value_channel = key
-
-    @QtCore.Slot()
     def _restore_default_view(self):
         """ Restore the arrangement of DockWidgets to the default
         """
@@ -598,24 +656,26 @@ class BocquelLabTimeSeriesGui(GuiBase):
                 disableAutoRange=False
             )
 
-    def _remove_channel_from_plot(self, channel: str) -> None:
-        data_curve = self.curves[channel]
-        average_curve = self.averaged_curves[channel]
-        for curve in (data_curve, average_curve):
-            if curve in self._vb.addedItems:
-                self._vb.removeItem(curve)
-            if curve in self._mw.trace_plot_widget.items():
-                self._mw.trace_plot_widget.removeItem(curve)
-            self._legend.removeItem(curve)
+    def _remove_curve(self, curve) -> None:
+        if curve in self._vb.addedItems:
+            self._vb.removeItem(curve)
+        if curve in self._mw.trace_plot_widget.items():
+            self._mw.trace_plot_widget.removeItem(curve)
 
     def _toggle_channel_data_plot(self, channel, show_data: bool, show_average: bool):
-        self._remove_channel_from_plot(channel)
-        for curve, show, averaged in ((self.curves[channel], show_data, False),
-                                      (self.averaged_curves[channel], show_average, True)):
-            if not show:
-                continue
-            if channel in self._channels_per_axis[0]:
-                self._mw.trace_plot_widget.addItem(curve)
+        for curve, show in ((self.curves[channel], show_data),
+                            (self.averaged_curves[channel], show_average)):
+            self._remove_curve(curve)
+            if show:
+                if channel in self._channels_per_axis[0]:
+                    self._mw.trace_plot_widget.addItem(curve)
+                else:
+                    self._vb.addItem(curve)
+
+    def _toggle_sum_plot(self) -> None:
+        self._remove_curve(self.sum_curve)
+        if self._sum_channels:
+            if self._sum_on_left_axis:
+                self._mw.trace_plot_widget.addItem(self.sum_curve)
             else:
-                self._vb.addItem(curve)
-            self._legend.addItem(curve, self._name(channel, averaged))
+                self._vb.addItem(self.sum_curve)

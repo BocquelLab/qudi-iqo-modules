@@ -29,7 +29,9 @@ from typing import Dict, Optional
 from PySide6 import QtCore
 
 from qudi.core.configoption import ConfigOption
+from qudi.core.statusvariable import StatusVar
 from qudi.util.datastorage import TextDataStorage
+from qudi.util.network import netobtain
 from qudi.interface.data_instream_interface import SampleTiming
 from qudi.logic.time_series_reader_logic import TimeSeriesReaderLogic
 
@@ -43,6 +45,9 @@ class BocquelLabTimeSeriesReaderLogic(TimeSeriesReaderLogic):
     keep their hardware name. The average of a channel is called '<display name> average'.
 
     Saved data stays in the streamer units (counts/s for the NI counters).
+
+    Streamer channels that are new since the last activation (e.g. a second APD added to the
+    config) are switched on and averaged automatically; channels switched off by the user stay off.
 
     Example config for copy-paste:
 
@@ -60,9 +65,14 @@ class BocquelLabTimeSeriesReaderLogic(TimeSeriesReaderLogic):
     """
 
     _channel_display_names = ConfigOption(name='channel_display_names', default=dict(), missing='nothing')
+    # streamer channels seen at the last activation; used to switch on channels newly added to the
+    # config (e.g. a second APD) instead of keeping the saved channel selection without them
+    _known_channels = StatusVar(name='known_channels', default=None)
 
     def on_activate(self):
+        self._enable_new_channels()
         super().on_activate()
+        self._known_channels = list(self.streamer_constraints.channel_units)
         names = {str(ch): str(name) for ch, name in (self._channel_display_names or dict()).items()}
         channels = list(self.streamer_constraints.channel_units)
         unknown = [ch for ch in names if ch not in channels]
@@ -74,6 +84,21 @@ class BocquelLabTimeSeriesReaderLogic(TimeSeriesReaderLogic):
             self.log.error(f'channel_display_names are not unique ({names}). Using hardware channel names.')
             names = {ch: ch for ch in channels}
         self._channel_display_names = names
+
+    def _enable_new_channels(self) -> None:
+        """ Add streamer channels that were not there at the last activation to the saved active
+        and averaged channels (qudi would otherwise keep the old selection). Channels the user
+        switched off stay off. Without a saved channel list (first start) qudi's defaults apply.
+        """
+        if self._active_channels is None or self._known_channels is None:
+            return
+        channels = list(netobtain(self._streamer().constraints).channel_units)
+        new = [ch for ch in channels if ch not in self._known_channels and ch not in self._active_channels]
+        if new:
+            self.log.info(f'New streamer channels {new}: switched on and averaged.')
+            self._active_channels = [ch for ch in channels if ch in self._active_channels or ch in new]
+            averaged = list(self._averaged_channels or list())
+            self._averaged_channels = [ch for ch in self._active_channels if ch in averaged or ch in new]
 
     @property
     def channel_display_names(self) -> Dict[str, str]:
