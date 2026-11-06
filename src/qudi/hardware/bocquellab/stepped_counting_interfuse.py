@@ -33,6 +33,7 @@ from qudi.core.configoption import ConfigOption
 from qudi.core.connector import Connector
 from qudi.util.mutex import Mutex
 from qudi.interface.finite_sampling_input_interface import FiniteSamplingInputInterface
+from qudi.interface.finite_sampling_input_interface import FiniteSamplingInputConstraints
 
 
 class SteppedCountingInterfuse(FiniteSamplingInputInterface):
@@ -42,10 +43,13 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
       1. microwave.trigger_scan_point()  (loads list entry i; the ODMR logic resets the list to
          entry 0 after every frame via reset_scan())
       2. wait settle_time
-      3. counter.acquire_frame(1): one hardware-timed sample of 1/sample_rate seconds
-    Channels, units and limits are those of the counter. The dwell time per point is
-    1 / sample_rate (ODMR data rate x oversampling); each point additionally takes settle_time plus
-    the communication and task set-up overhead.
+      3. counter.acquire_frame(samples_per_point) at samples_per_point x sample_rate, averaged:
+         hardware-timed counting for 1/sample_rate seconds in total (NI-DAQmx refuses 1-sample
+         acquisitions, hence default 2)
+    Channels, units and frame size limits are those of the counter; sample rate limits are divided
+    by samples_per_point. The dwell time per point is 1 / sample_rate (ODMR data rate x
+    oversampling); each point additionally takes settle_time plus the communication and task
+    set-up overhead (NI X-series finite sampling input: about 50-60 ms per acquisition).
 
     The connected microwave source must provide trigger_scan_point()
     (bocquellab.mw_source_srssg.BocquelLabMicrowaveSRSSG).
@@ -56,6 +60,7 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
         module.Class: 'bocquellab.stepped_counting_interfuse.SteppedCountingInterfuse'
         options:
             settle_time: 0.01  # s, wait after each frequency step (SG384 spec: < 8 ms)
+            samples_per_point: 2  # optional, counter samples averaged per point (NI needs >= 2)
         connect:
             counter: ni_finite_sampling_input
             microwave: sg384
@@ -65,6 +70,11 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
     _microwave = Connector(name='microwave', interface='MicrowaveInterface')
 
     _settle_time = ConfigOption(name='settle_time', default=0.01, missing='warn', constructor=float)
+    # NI-DAQmx needs a buffer of at least 2 samples per acquisition: each point is acquired as
+    # samples_per_point samples at samples_per_point x the sample rate and averaged, so the
+    # counting time per point stays 1 / sample_rate.
+    _samples_per_point = ConfigOption(name='samples_per_point', default=2, missing='nothing',
+                                      constructor=lambda x: int(x))
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -81,6 +91,8 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
     def on_activate(self):
         if self._settle_time < 0:
             raise ValueError(f'settle_time must be >= 0 s, got {self._settle_time}')
+        if self._samples_per_point < 1:
+            raise ValueError(f'samples_per_point must be >= 1, got {self._samples_per_point}')
         if not hasattr(self._microwave(), 'trigger_scan_point'):
             raise TypeError('Connected microwave source has no trigger_scan_point() '
                             '(use bocquellab.mw_source_srssg.BocquelLabMicrowaveSRSSG).')
@@ -92,7 +104,14 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
     # ------------------------------------------------------------------ pass-through properties
     @property
     def constraints(self):
-        return self._counter().constraints
+        """ Counter constraints, with the sample rate limits divided by samples_per_point. """
+        c = self._counter().constraints
+        k = self._samples_per_point
+        return FiniteSamplingInputConstraints(
+            channel_units=c.channel_units,
+            frame_size_limits=c.frame_size_limits,
+            sample_rate_limits=(c.min_sample_rate / k, c.max_sample_rate / k)
+        )
 
     @property
     def active_channels(self):
@@ -100,7 +119,7 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
 
     @property
     def sample_rate(self):
-        return self._counter().sample_rate
+        return self._counter().sample_rate / self._samples_per_point
 
     @property
     def frame_size(self):
@@ -113,7 +132,7 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
 
     def set_sample_rate(self, rate):
         self._assert_idle('change the sample rate')
-        self._counter().set_sample_rate(rate)
+        self._counter().set_sample_rate(float(rate) * self._samples_per_point)
 
     def set_active_channels(self, channels):
         self._assert_idle('change the active channels')
@@ -202,11 +221,12 @@ class SteppedCountingInterfuse(FiniteSamplingInputInterface):
                 microwave.trigger_scan_point()
                 if self._settle_time > 0:
                     time.sleep(self._settle_time)
-                sample = counter.acquire_frame(1)
+                samples = counter.acquire_frame(self._samples_per_point)
                 with self._data_ready:
-                    for ch, values in sample.items():
+                    for ch, values in samples.items():
                         if ch in self._buffer:
-                            self._buffer[ch].append(float(np.asarray(values).ravel()[0]))
+                            # mean of equal-length sub-samples = rate over the whole point
+                            self._buffer[ch].append(float(np.mean(np.asarray(values, dtype=np.float64))))
                     self._samples_acquired += 1
                     self._data_ready.notify_all()
         except Exception as err:
