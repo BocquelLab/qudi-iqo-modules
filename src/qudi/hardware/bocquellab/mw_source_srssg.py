@@ -39,6 +39,7 @@ class BocquelLabMicrowaveSRSSG(MicrowaveSRSSG):
     - after set_cw the front-panel display shows the parameter qudi changed last: frequency or
       Type-N power (power if both changed); unchanged values leave the display as it is.
     - rf_output_active: actual Type-N output state read from the generator (ENBR?).
+    - trigger_scan_point(): steps a running frequency scan by one list entry (*TRG).
 
     Only qudi is limited: the SG384 front panel can still set up to +16.5 dBm.
 
@@ -110,6 +111,17 @@ class BocquelLabMicrowaveSRSSG(MicrowaveSRSSG):
         if power_changed or frequency_changed:
             with self._thread_lock:
                 self._write(f'DISP {self._DISPLAY_POWER if power_changed else self._DISPLAY_FREQUENCY:d}')
+
+    def trigger_scan_point(self) -> None:
+        """ Step the running frequency scan: *TRG loads the list entry at the current index and
+        moves the index to the next entry (manual p. 62, 80). The SG384 has no hardware trigger
+        input for list mode, so a scan is stepped by this call (see
+        bocquellab.stepped_counting_interfuse). reset_scan() returns to the first entry.
+        """
+        with self._thread_lock:
+            if self.module_state() == 'idle' or self._in_cw_mode:
+                raise RuntimeError('Unable to step the frequency scan: no scan running.')
+            self._write('*TRG')
 
     @property
     def rf_output_active(self) -> bool:

@@ -29,6 +29,7 @@
 - Supported pyvisa for coherent obis laser
 - Added Magnet Toolchain
 - Added `hardware.bocquellab.mw_source_srssg.BocquelLabMicrowaveSRSSG`: SRS SG380 driver with a configurable RF power limit (`max_power`) and warning threshold (`warning_power`); front panel shows the parameter changed last; RF output state read-back
+- Added `hardware.bocquellab.stepped_counting_interfuse.SteppedCountingInterfuse`: ODMR with a microwave source without hardware list trigger (SRS SG384); steps the source per sample (`trigger_scan_point`, *TRG), waits `settle_time`, counts one sample
 - Added BocquelLab ODMR logic and GUI (`logic.bocquellab.odmr_logic`, `gui.bocquellab.odmr.odmrgui`): microwave frequency, power and RF state read back after each change made by qudi, shown in a "Microwave readback" dock
 - Added BocquelLab time series GUI and logic (`gui.bocquellab.time_series`, `logic.bocquellab.time_series_reader_logic`): channel display names from config (value displays, dialogs, saved column headers), count rates in kcps with all APDs on one axis, one value display per channel, optional APD sum trace and display, newly configured channels switched on automatically, moving average saved in trace snapshots
 - Added `hardware.laser.cobolt_06_laser.Cobolt06Laser`: Cobolt 06-01 Series lasers (via `pycobolt`) for the `SimpleLaserInterface` laser toolchain
