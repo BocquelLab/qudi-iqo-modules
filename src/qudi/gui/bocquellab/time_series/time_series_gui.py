@@ -60,9 +60,9 @@ _SUM_PEN_COLOR = (215, 215, 215)  # light grey: distinct from the channel colour
 def format_count_rate(value: float, decimals: Optional[int] = None) -> str:
     """ Format a count rate given in counts/s.
 
-    decimals None (auto): below 1 kcps whole cps ('873 cps'); 1-100 kcps one decimal in kcps
-    ('1.2 kcps', '45.6 kcps'); from 100 kcps on whole kcps ('345 kcps', '2345 kcps').
-    The resolution is never finer than 1 count/s. With decimals given: kcps with that many decimals.
+    decimals None (auto): resolution of exactly 1 count/s. Below 1 kcps whole cps ('873 cps'),
+    from 1 kcps on kcps with 3 decimals ('1.234 kcps', '45.678 kcps', '2345.678 kcps').
+    With decimals given: kcps with that many decimals.
     """
     if not np.isfinite(value):
         return f'{value} cps'
@@ -70,9 +70,7 @@ def format_count_rate(value: float, decimals: Optional[int] = None) -> str:
         return f'{value / 1e3:.{int(decimals):d}f} kcps'
     if abs(value) < 999.5:
         return f'{value:.0f} cps'
-    if abs(value) < 99950:
-        return f'{value / 1e3:.1f} kcps'
-    return f'{value / 1e3:.0f} kcps'
+    return f'{value / 1e3:.3f} kcps'
 
 
 class _ValueDisplay(QtWidgets.QWidget):
@@ -383,7 +381,8 @@ class BocquelLabTimeSeriesGui(GuiBase):
             layout.removeWidget(display)
             display.deleteLater()
         self._value_displays = dict()
-        point_size = 60 if len(keys) <= 1 else 44
+        point_size = {0: 60, 1: 60, 2: 44}.get(len(keys), 34)  # 3 displays fit the default window
+        layout.setSpacing(30)
         for key in keys:
             caption = self._sum_name() if key == _SUM_KEY else self._name(key)
             display = _ValueDisplay(caption, point_size)
