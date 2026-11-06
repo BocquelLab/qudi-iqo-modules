@@ -3,8 +3,8 @@
 BocquelLab extension of qudi's ODMR GUI (qudi.gui.odmr.odmrgui): the CW control dock also shows the
 frequency, power and RF output state read back from the microwave source after each change made by
 qudi (BocquelLabOdmrLogic.sigMicrowaveReadback). Each read-back value sits directly below its
-setting; the RF output state is to the right of the four fields. Everything else is inherited
-unchanged.
+setting; the RF output state is to the right of the four fields. Default view: control docks
+stacked on the left, plots on the right. Everything else is inherited unchanged.
 
 Copyright (c) 2021, the qudi developers. See the AUTHORS.md file at the top-level directory of this
 distribution and on <https://github.com/Ulm-IQO/qudi-iqo-modules/>
@@ -135,6 +135,19 @@ class BocquelLabOdmrGui(OdmrGui):
         dock.setWidget(widget)
         if old_widget is not None:
             old_widget.deleteLater()  # empty now: its two spinboxes moved to the new grid
+
+    @QtCore.Slot()
+    def restore_default_view(self):
+        """ Default layout: CW control, scan control and fit stacked top to bottom on the left,
+        the plots fill the right side (central widget).
+        """
+        super().restore_default_view()  # floating state, CW dock visibility and menu check state
+        docks = (self._cw_control_dockwidget, self._scan_control_dockwidget, self._fit_dockwidget)
+        for dock in docks:
+            dock.setFloating(False)
+            self._mw.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self._mw.splitDockWidget(docks[0], docks[1], QtCore.Qt.Orientation.Vertical)
+        self._mw.splitDockWidget(docks[1], docks[2], QtCore.Qt.Orientation.Vertical)
 
     @QtCore.Slot(dict)
     def _update_microwave_readback(self, readback: dict) -> None:
