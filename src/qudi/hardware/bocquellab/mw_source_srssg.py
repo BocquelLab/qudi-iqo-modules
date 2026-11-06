@@ -36,7 +36,9 @@ class BocquelLabMicrowaveSRSSG(MicrowaveSRSSG):
       the ODMR logic clips CW and scan powers to it; set_cw / configure_scan also refuse anything
       higher (ValueError), independently of the inherited assert checks.
     - warning_power (dBm, optional): a power above this is accepted but logged as a warning.
-    - after set_cw the front-panel display shows the Type-N power (DISP 6) instead of the frequency.
+    - after set_cw the front-panel display shows the parameter qudi changed last: frequency or
+      Type-N power (power if both changed); unchanged values leave the display as it is.
+    - rf_output_active: actual Type-N output state read from the generator (ENBR?).
 
     Only qudi is limited: the SG384 front panel can still set up to +16.5 dBm.
 
@@ -56,6 +58,9 @@ class BocquelLabMicrowaveSRSSG(MicrowaveSRSSG):
     _max_power = ConfigOption('max_power', missing='error', constructor=float)
     _warning_power = ConfigOption('warning_power', default=None, missing='nothing',
                                   constructor=lambda x: None if x is None else float(x))
+
+    _DISPLAY_FREQUENCY = 2  # DISP codes, manual p. 63
+    _DISPLAY_POWER = 6  # RF Type-N amplitude
 
     def on_activate(self):
         super().on_activate()
@@ -92,11 +97,25 @@ class BocquelLabMicrowaveSRSSG(MicrowaveSRSSG):
 
     def set_cw(self, frequency, power):
         self._check_power(power, 'CW')
-        super().set_cw(frequency, power)
-        # Front panel: show the Type-N power instead of the frequency (display only, no RF change).
-        # A frequency scan list sets the display back to frequency for each list point.
+        # values on the generator before the change (also catches changes made on the front panel)
         with self._thread_lock:
-            self._write('DISP 6')
+            old_frequency = float(self._device.query('FREQ?'))
+            old_power = float(self._device.query('AMPR?'))
+        super().set_cw(frequency, power)
+        # Front panel shows the parameter changed last (display only, no RF change). The frequency
+        # is written before the power, so when both change the power is shown. Nothing changed:
+        # the display stays as it is. A frequency scan list sets the display to frequency itself.
+        power_changed = abs(float(power) - old_power) > 0.005
+        frequency_changed = abs(float(frequency) - old_frequency) > 0.0005
+        if power_changed or frequency_changed:
+            with self._thread_lock:
+                self._write(f'DISP {self._DISPLAY_POWER if power_changed else self._DISPLAY_FREQUENCY:d}')
+
+    @property
+    def rf_output_active(self) -> bool:
+        """ True if the Type-N RF output is on, as reported by the generator (ENBR?). """
+        with self._thread_lock:
+            return self._output_active()
 
     def configure_scan(self, power, frequencies, mode, sample_rate):
         self._check_power(power, 'Scan')
