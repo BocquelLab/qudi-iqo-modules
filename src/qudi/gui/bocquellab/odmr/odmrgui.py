@@ -78,8 +78,8 @@ class BocquelLabOdmrGui(OdmrGui):
     def _add_readback_to_cw_dock(self) -> None:
         """ Rebuild the CW dock as a grid, re-using qudi's two spinboxes:
 
-            CW Power:  [spinbox]   CW Frequency: [spinbox]  | RF output
-            Read back:  value      Read back:     value     |    ON
+            CW Power:      [spinbox]   CW Frequency:      [spinbox]  | RF output
+            Current power:  value      Current frequency:  value     |    ON
         """
         dock = self._cw_control_dockwidget
         power_spinbox = dock.cw_power_spinbox
@@ -118,9 +118,9 @@ class BocquelLabOdmrGui(OdmrGui):
         layout.addWidget(power_spinbox, 0, 1)  # re-parented from qudi's dock widget
         layout.addWidget(caption('CW Frequency:'), 0, 2)
         layout.addWidget(frequency_spinbox, 0, 3)
-        layout.addWidget(caption('Read back:'), 1, 0)
+        layout.addWidget(caption('Current power:'), 1, 0)
         layout.addWidget(self._readback_power_label, 1, 1)
-        layout.addWidget(caption('Read back:'), 1, 2)
+        layout.addWidget(caption('Current frequency:'), 1, 2)
         layout.addWidget(self._readback_frequency_label, 1, 3)
         separator = QtWidgets.QFrame()
         separator.setFrameShape(QtWidgets.QFrame.Shape.VLine)
