@@ -51,6 +51,9 @@ class RFSoCQickBoard(Base):
       release('name') afterwards; a second user gets a BoardBusyError. The module is 'locked' meanwhile.
     - simulate: True replaces the board by a simulation that runs the real compiled program and returns
       synthetic APD counts (NV centre with laser, microwave and APD); no network access.
+    - edge_counter_thresholds: [high, low] in ADC units for the photon (edge) counters of the readouts,
+      for the modules that count with the RFSoC. An APD pulse is counted when the ADC signal rises above
+      'high' after having been below 'low'. The default [2000, 500] is NOT VERIFIED on the setup.
 
     Example config for copy-paste:
 
@@ -63,6 +66,7 @@ class RFSoCQickBoard(Base):
             max_gain: 2000  # DAC units, hard limit (full scale 32766)
             warning_gain: 1000  # optional: gains above this are logged as a warning
             comm_timeout: 10  # s, optional
+            edge_counter_thresholds: [2000, 500]  # optional, [high, low] in ADC units; default not verified
             simulate: False  # True: simulated board
             simulation:  # optional, only used with simulate: True (see rfsoc_nv.simulator)
                 realtime: True  # simulated programs take as long as real ones
@@ -79,6 +83,7 @@ class RFSoCQickBoard(Base):
     _max_gain = ConfigOption('max_gain', missing='error', constructor=float)
     _warning_gain = ConfigOption('warning_gain', default=None)
     _comm_timeout = ConfigOption('comm_timeout', default=10)
+    _edge_counter_thresholds = ConfigOption('edge_counter_thresholds', default=(2000, 500))
     _simulate = ConfigOption('simulate', default=False)
     _simulation = ConfigOption('simulation', default=None)
 
@@ -96,6 +101,10 @@ class RFSoCQickBoard(Base):
             raise ValueError(f'max_gain must be in ]0, {self._FULL_SCALE_GAIN}], got {self._max_gain}.')
         if self._warning_gain is not None and not 0 < float(self._warning_gain) <= self._max_gain:
             raise ValueError(f'warning_gain must be in ]0, max_gain], got {self._warning_gain}.')
+        high, low = (int(x) for x in self._edge_counter_thresholds)
+        if not 0 <= low < high:
+            raise ValueError(f'edge_counter_thresholds must be [high, low] with 0 <= low < high, '
+                             f'got {list(self._edge_counter_thresholds)}.')
         try:
             from rfsoc_nv import QickBoard  # lab packages: imported here so that qudi starts without them
         except ImportError as err:
@@ -155,6 +164,12 @@ class RFSoCQickBoard(Base):
     def max_gain(self):
         """ Hard generator gain limit in DAC units. """
         return self._max_gain
+
+    @property
+    def edge_counter_thresholds(self):
+        """ (high, low) thresholds of the photon counters in ADC units, for modules counting with the RFSoC. """
+        high, low = self._edge_counter_thresholds
+        return int(high), int(low)
 
     @property
     def owner(self):

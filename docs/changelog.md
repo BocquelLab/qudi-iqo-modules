@@ -36,6 +36,9 @@
 - Fixed `hardware.ni_x_series.ni_x_series_counter` not importing on Python < 3.12 (backslash inside f-string expressions)
 - Added `hardware.laser.cobolt_06_laser.Cobolt06Laser`: Cobolt 06-01 Series lasers (via `pycobolt`) for the `SimpleLaserInterface` laser toolchain
 - Added `hardware.bocquellab.rfsoc_qick_board.RFSoCQickBoard`: connection to the RFSoC4x2 / QICK board (Pyro4) shared by the RFSoC modules, with a mandatory hard generator gain limit (`max_gain`, programs above it are refused), single-user access (`claim` / `release`), outputs off on (de)activation and a simulated board (`simulate: True`, package `rfsoc_nv` of the RFSoC-NV repository) that runs the compiled tProc program and returns synthetic counts
+- Added `hardware.bocquellab.rfsoc_microwave.RFSoCMicrowave`: an RFSoC4x2 / QICK generator as `MicrowaveInterface` source (CW and jump-list scans stepped with `trigger_scan_point()`, e.g. by `NISteppedOdmrCounter`), power in dBm through a one-point gain calibration (config, marked as not measured), mandatory `max_gain` that refuses instead of clipping, output off when a scan or CW stops and on deactivation
+- Added `hardware.bocquellab.rfsoc_sim_odmr_counter.RFSoCSimOdmrCounter`: `NISteppedOdmrCounter` without NI card, counting the APD of the simulated RFSoC experiment (tests without hardware)
+- `gui.bocquellab.odmr.odmrgui.BocquelLabOdmrGui` no longer raises an error at start-up when 0 dBm is outside the power range of the microwave source
 
 ### Other
 - Disabled workflow triggers on a draft PR

@@ -31,10 +31,24 @@ from PySide6 import QtCore, QtWidgets
 from qudi.core.statusvariable import StatusVar
 from qudi.util.units import ScaledFloat
 from qudi.util.widgets.scientific_spinbox import ScienDSpinBox
+import qudi.gui.odmr.odmrgui as _qudi_odmrgui
 from qudi.gui.odmr.odmrgui import OdmrGui
+from qudi.gui.odmr.odmr_control_dockwidget import OdmrCwControlDockWidget
 
 _READBACK_TOOLTIP = ('Read back from the microwave source after the last change made by qudi.\n'
                      'Changes made on the generator front panel appear at the next read-back.')
+
+
+class _CwControlDockWidget(OdmrCwControlDockWidget):
+    """ qudi's CW control dock without an error at start-up: the original emits its "parameters
+    changed" signal while it is still being built when 0 dBm is outside the power range of the
+    microwave source (e.g. the RFSoC with a low gain limit), before the frequency field exists.
+    """
+
+    @QtCore.Slot()
+    def _cw_parameters_changed_cb(self):
+        if hasattr(self, 'cw_frequency_spinbox'):
+            super()._cw_parameters_changed_cb()
 
 
 class BocquelLabOdmrGui(OdmrGui):
@@ -65,7 +79,13 @@ class BocquelLabOdmrGui(OdmrGui):
         self._applied_settle_time = None  # last value confirmed by the logic
 
     def on_activate(self):
-        super().on_activate()  # ends with show(), which restores the saved window layout
+        # qudi's OdmrGui builds its docks in on_activate: let it take the corrected CW dock (see above)
+        original = _qudi_odmrgui.OdmrCwControlDockWidget
+        _qudi_odmrgui.OdmrCwControlDockWidget = _CwControlDockWidget
+        try:
+            super().on_activate()  # ends with show(), which restores the saved window layout
+        finally:
+            _qudi_odmrgui.OdmrCwControlDockWidget = original
         self._add_readback_to_cw_dock()
         self._add_settle_time_to_scan_dock()
         if self._layout_version != self._DEFAULT_LAYOUT_VERSION:

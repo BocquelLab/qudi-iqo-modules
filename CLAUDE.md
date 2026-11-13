@@ -57,8 +57,18 @@ Without `-c`, qudi reloads the path stored in `%APPDATA%\qudi\load.cfg` (last se
 ## RFSoC4x2 / QICK
 
 An RFSoC4x2 board running QICK is an additional, config-selected option for microwave, CW ODMR and pulsed
-measurements (counting with its own edge counter). It replaces nothing: the SG384 and M8190A setups keep
-working, and the NI card keeps the confocal scan, optimizer and live counts. No RFSoC scanning.
+measurements. It replaces nothing: the SG384 and M8190A setups keep working, and the NI card keeps the
+confocal scan, optimizer and live counts. No RFSoC scanning.
+
+Plan (decided 2026-11-13). Near term: microwaves from the RFSoC, **all counting on the NI card, no APD
+rewiring** (APD 1 on PFI0 for ODMR, pulsed, confocal; APD 2 for the time series).
+1. CW ODMR: `rfsoc_microwave` stepped by the existing `NISteppedOdmrCounter` (done, see below).
+2. Pulsed: RFSoC `PulserInterface` only (digital channels laser gate, microwave gate, and a marker on a spare
+   PMOD pin to the NI gate input PFI1), with the unchanged `fast_counter_ni`; channel names and settings as
+   the M8190A setup in `lab_setup.cfg`, so that switching is a config change.
+3. Next stage, not built yet (keep the board module ready for it): RFSoC edge counters for both APDs (APD 1 =
+   NV- on readout 0 / ADC_D, APD 2 = NV0 on readout 1 / ADC_C) for ODMR with on-board sweep, gated counting,
+   two-channel time series and per-shot counts; extra laser gate lines on PMOD pins; DAC_A left free.
 
 | Repository (lab PC) | Branch | What it is | Installed in `qudi-env` as |
 |---|---|---|---|
@@ -89,7 +99,12 @@ Rules:
   gain must be measured before the amplifier is connected.
 - Do not drive real signals until the user says the cables (microwave output, laser gate, APD input; Swap A,
   B, C in the wiring diagram) are connected. Running programs on the unconnected board is fine.
-- Every RFSoC measurement module warns in the log when it gets zero counts (`board.warn_if_zero`).
+- Every module that counts with the RFSoC warns in the log when it gets zero counts (`board.warn_if_zero`).
+- Not verified on the setup yet (the proven "_live" scripts are on another PC): Nyquist zone 2 for the
+  microwave generator and edge counter thresholds 2000 / 500. Both are config options (`nyquist_zone` of
+  `rfsoc_microwave`, `edge_counter_thresholds` of `rfsoc_board`).
+- The DAC also emits the image of the wanted tone (4915.2 MHz - f, i.e. 2045.2 MHz for 2870 MHz), see the
+  docstring of `QickSoc.set_nyquist`; the amplifier (10 MHz - 4.2 GHz) passes both.
 
 Modules and tools:
 
@@ -99,11 +114,24 @@ Modules and tools:
   `rfsoc_nv.SimulatedSoc`: the real compiled program runs in a tProc v1 emulator and a small NV model returns
   synthetic counts (ODMR dip, Rabi, Ramsey, echo); `simulation: {world: {apd_connected: False}}` etc. unplug
   cables in the simulation. `board.soc.sim_report()` lists program size, late outputs and queue fill.
+- `hardware/bocquellab/rfsoc_microwave.py` (`RFSoCMicrowave`, config name `rfsoc_microwave`, connector `board`):
+  `MicrowaveInterface` on one generator, CW and jump-list scans. Continuous output (periodic pulse); the
+  frequency list sits in the tProc data memory and `trigger_scan_point()` restarts a 20-word program that
+  plays the next entry (`rfsoc_nv.SteppedCW`, one network call per point); `reset_scan()` checks that the
+  board did every step. Power in dBm through `calibration_gain` / `calibration_power` (placeholder until
+  measured, `calibration_measured: False` logs a warning); own mandatory `max_gain`; holds the board
+  (`claim`) while the output is on; `off()` = all outputs off. `laser_gate_pins: [0]` holds PMOD0_0 high
+  while the output is on (needed when the laser modulation input is on the RFSoC).
+- `hardware/bocquellab/rfsoc_sim_odmr_counter.py` (`RFSoCSimOdmrCounter`): the NI stepped ODMR counter with
+  fake NI tasks that count the simulated APD (`board.soc.sim_apd_counts(dwell)`); `dummy.cfg` only
+  (`odmr_logic_rfsoc`, `odmr_gui_rfsoc`). With the real board the unchanged `NISteppedOdmrCounter` counts.
 - Tests (no qudi needed): `python C:\Software\RFSoC-NV\tests\test_simulator.py` (simulation only) and
   `python C:\Software\RFSoC-NV\tests\board_check.py [--simulate]` (real board with nothing connected: low-gain
-  pulses on generator 0, PMOD0_0 toggling, tProc timing measurement).
+  pulses on generator 0, PMOD0_0 toggling, tProc timing measurement, stepped CW).
 - Measured on the board (2026-11-12): 5.0 clock cycles (16 ns) per `mathi`, 5.2-5.5 per `loopnz`; a 59-word
   qick-dawg `RabiSweep` with 51 000 shots runs in 0.46 s; `outputs_off` takes about 70 ms.
+- Measured 2026-11-13: a frequency step (`trigger_scan_point`) takes 0.8 ms (1.0 ms worst of 505), switching
+  the microwave on 155 ms; ODMR with the NI counter at 5 ms dwell and 1 ms settle time: 7.6 ms per point.
 
 ## Big picture: three module layers
 
