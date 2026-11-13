@@ -13,6 +13,7 @@ Python/Qt (PySide6) framework for controlling lab experiments. Read this before 
 | Config files (separate git repo `BocquelLab/qudi-config`) | `C:\Software\qudi-config\dummy.cfg`, `C:\Software\qudi-config\lab_setup.cfg` |
 | Python 3.10 (`python` is **not** on PATH) | `C:\Users\bocj0388\AppData\Local\miniconda3\envs\qudi-env\python.exe`; `qudi.exe` in the env's `Scripts\` |
 | Lab PC (user `dphy-bocquellab`; Cobolt laser on COM8) | env `C:\Users\dphy-bocquellab\.conda\envs\qudi-env\` (`python.exe`, `Lib\site-packages\qudi\`), logs `C:\Users\dphy-bocquellab\qudi\log\` |
+| RFSoC repositories (lab PC; forks `BocquelLab/qick`, `/qick-dawg`, `/RFSoC-NV`), see "RFSoC4x2 / QICK" | `C:\Software\qick`, `C:\Software\qick-dawg`, `C:\Software\RFSoC-NV` |
 | Logs | `C:\Users\bocj0388\qudi\log\` |
 | Status variables (one YAML file per module) | `%APPDATA%\qudi\status-<Class>_<base>_<module_name>.cfg` |
 | Last loaded config (re-used at next start) | `%APPDATA%\qudi\load.cfg` |
@@ -33,9 +34,10 @@ any work on counting, scanning, microwave, laser modulation or pulsed measuremen
   Use it to test logic, GUIs and the module-loading machinery.
 - **`C:\Software\qudi-config\lab_setup.cfg`** — **real hardware, lab PC only**. Activating its modules opens
   VISA / NI-DAQ resources; never load it on a development PC. New real drivers get their config block here.
-- `dummy.cfg` is still a byte-identical copy of upstream `src/qudi/default.cfg` (keep that one as the untouched
-  upstream reference). `lab_setup.cfg` has started to diverge: `laser_logic` is wired to the Cobolt laser
-  (`cobolt_laser`, `laser/cobolt_06_laser.py`) instead of `laser_dummy`.
+- `dummy.cfg` is upstream `src/qudi/default.cfg` (keep that one as the untouched upstream reference) plus, at
+  the end, the simulated RFSoC blocks (`rfsoc_board` with `simulate: True`). New RFSoC blocks go into `dummy.cfg`
+  (simulated) first and into `lab_setup.cfg` only once the simulated version works.
+  `lab_setup.cfg` has diverged: Cobolt laser, SG384 + NI stepped ODMR counter, M8190A + NI gated counter, etc.
 - Config blocks live in the config repo, not in this repo. Commit config changes in `C:\Software\qudi-config`.
 - This dev PC has pyvisa but **no VISA backend** (no NI-VISA / Keysight IO Libraries): `pyvisa.ResourceManager()`
   raises here. Expected — real drivers can only be activated on the lab PC.
@@ -51,6 +53,57 @@ qudi-config-editor                                             # GUI editor for 
 Without `-c`, qudi reloads the path stored in `%APPDATA%\qudi\load.cfg` (last session), then falls back to
 `~\qudi\config\default.cfg`. In the manager window, modules are activated per column; the IPython console dock
 (View → Show console) exposes every **active** module under its config name, e.g. `laser_dummy.get_power()`.
+
+## RFSoC4x2 / QICK
+
+An RFSoC4x2 board running QICK is an additional, config-selected option for microwave, CW ODMR and pulsed
+measurements (counting with its own edge counter). It replaces nothing: the SG384 and M8190A setups keep
+working, and the NI card keeps the confocal scan, optimizer and live counts. No RFSoC scanning.
+
+| Repository (lab PC) | Branch | What it is | Installed in `qudi-env` as |
+|---|---|---|---|
+| `C:\Software\qick` (fork of openquantumhardware/qick) | local `qick-0.2.302` (commit 1eba156) | QICK library: program classes, assembler, `QickConfig` | `qick` 0.2.302, editable, `--no-deps` |
+| `C:\Software\qick-dawg` (fork of sandialabs/qick-dawg) | `main` | NV programs (`LockinODMR`, `RabiSweep`, `Ramsey`, ...) and the photon counting firmware | `qickdawg`, editable, `--no-deps` |
+| `C:\Software\RFSoC-NV` (lab repository) | `qudi-board-client` | board notes and start-up scripts (French), plus package `rfsoc_nv` in `src_controlleur\rfsoc_nv\`: board client, tProc v1 emulator, simulated board | `rfsoc-nv`, editable, `--no-deps` |
+
+Rules:
+
+- The PC must run the **same qick version as the board (0.2.302)**; `rfsoc_nv` refuses a mismatch. Never
+  `pip install qickdawg` with dependencies (it pins `qick==0.2.302` from PyPI and would replace the editable
+  qick). Other packages added to `qudi-env` for this: `Pyro4`, `serpent`, `tqdm`, `itemattribute`.
+- Never change anything on the board: its qick, firmware (`qick-dawg/firmware/photon_counting/qick_4x2.bit`)
+  or start-up scripts (`RFSoC-NV/startup/`).
+- Do not copy qick / qick-dawg / RFSoC-NV code into this repo. Board client and simulator code goes into
+  `RFSoC-NV` (new files only, existing files stay untouched); this repo only holds thin qudi adapters in
+  `src/qudi/hardware/bocquellab/rfsoc_*.py` that import `rfsoc_nv`, `qick`, `qickdawg` inside `on_activate`.
+- Board: `192.168.0.2` (also `pynq.local`) on the "Instruments" network, Pyro4 name server on port 8888,
+  QickSoc registered as `myqick`, pickle serializer. The board has Python 3.8 / numpy 1.x and cannot
+  unpickle numpy 2 objects: send plain Python numbers and lists only (`rfsoc_nv` converts).
+- Firmware facts (`print(soccfg)`): tProc v1 at 307.2 MHz (3.2552 ns per cycle), 1024-word program memory,
+  generator 0 = DAC_B (microwave), generator 1 = DAC_A, readout 0 = ADC_D (APD), readout 1 = ADC_C, both with
+  edge counter, 8 digital outputs PMOD0_0..7 (laser gate = PMOD0_0), all on tProc output port 7.
+- Safety pattern (as in `awg_keysight_m8190a.py`): `max_gain` is a mandatory hard limit; a program that sets
+  a higher generator gain, or changes a gain while it runs, is refused when it is loaded (never clipped);
+  outputs are switched off on activation and deactivation; activation fails if the board is unreachable.
+  Generator 0 is meant for the ZHL-10M4G21W0+ amplifier (input absolute maximum +5 dBm): the DAC power per
+  gain must be measured before the amplifier is connected.
+- Do not drive real signals until the user says the cables (microwave output, laser gate, APD input; Swap A,
+  B, C in the wiring diagram) are connected. Running programs on the unconnected board is fine.
+- Every RFSoC measurement module warns in the log when it gets zero counts (`board.warn_if_zero`).
+
+Modules and tools:
+
+- `hardware/bocquellab/rfsoc_qick_board.py` (`RFSoCQickBoard`, config name `rfsoc_board`): owns the connection,
+  one user at a time (`claim('name')` / `release('name')`), `soc` / `soccfg` for qick programs; qick-dawg
+  programs find the board through `qickdawg.soc` once the module is active. `simulate: True` uses
+  `rfsoc_nv.SimulatedSoc`: the real compiled program runs in a tProc v1 emulator and a small NV model returns
+  synthetic counts (ODMR dip, Rabi, Ramsey, echo); `simulation: {world: {apd_connected: False}}` etc. unplug
+  cables in the simulation. `board.soc.sim_report()` lists program size, late outputs and queue fill.
+- Tests (no qudi needed): `python C:\Software\RFSoC-NV\tests\test_simulator.py` (simulation only) and
+  `python C:\Software\RFSoC-NV\tests\board_check.py [--simulate]` (real board with nothing connected: low-gain
+  pulses on generator 0, PMOD0_0 toggling, tProc timing measurement).
+- Measured on the board (2026-11-12): 5.0 clock cycles (16 ns) per `mathi`, 5.2-5.5 per `loopnz`; a 59-word
+  qick-dawg `RabiSweep` with 51 000 shots runs in 0.46 s; `outputs_off` takes about 70 ms.
 
 ## Big picture: three module layers
 
@@ -449,6 +502,7 @@ not installed yet; line length 120 per `pyproject.toml`).
 | USB via vendor Python package | `motor/zaber_motion.py`, `spectrometer/oceanoptics_spectrometer.py` | `MotorInterface`, `SpectrometerInterface` |
 | USB virtual COM via vendor package imported lazily in `on_activate`, fault reporting, state checks before run-mode changes and starts | `laser/cobolt_06_laser.py` | `SimpleLaserInterface` |
 | NI-DAQmx | `ni_x_series/ni_x_series_analog_output.py` | `ProcessSetpointInterface` + `ProcessControlSwitchMixin` |
+| Shared connection module without interface (other hardware modules connect to it), `simulate` option, lab packages imported in `on_activate` | `bocquellab/rfsoc_qick_board.py` | — (`Base`) |
 | Dummy with ConfigOption constructor + constraints | `dummy/process_control_dummy.py` | `ProcessControlInterface` |
 | Dummy with StatusVar | `dummy/switch_dummy.py` | `SwitchInterface` |
 | Hardware → hardware (interfuse) | `interfuse/switch_combiner_interfuse.py` | `SwitchInterface` |
