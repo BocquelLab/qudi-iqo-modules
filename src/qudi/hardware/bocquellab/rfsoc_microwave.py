@@ -199,6 +199,11 @@ class RFSoCMicrowave(MicrowaveInterface):
             return self._cw_frequency
 
     @property
+    def gain_limit(self):
+        """ Highest generator gain this module accepts (DAC units): the lower of its own and the board's. """
+        return self._gain_limit
+
+    @property
     def cw_gain(self):
         """ Generator gain (DAC units) of the CW output. """
         with self._lock:

@@ -65,7 +65,8 @@ rewiring** (APD 1 on PFI0 for ODMR, pulsed, confocal; APD 2 for the time series)
 1. CW ODMR: `rfsoc_microwave` stepped by the existing `NISteppedOdmrCounter` (done, see below).
 2. Pulsed: RFSoC `PulserInterface` only (digital channels laser gate, microwave gate, and a marker on a spare
    PMOD pin to the NI gate input PFI1), with the unchanged `fast_counter_ni`; channel names and settings as
-   the M8190A setup in `lab_setup.cfg`, so that switching is a config change.
+   the M8190A setup in `lab_setup.cfg`, so that switching is a config change (done in simulation and on the
+   open board, see below; `lab_setup.cfg` blocks only after the user has seen them).
 3. Next stage, not built yet (keep the board module ready for it): RFSoC edge counters for both APDs (APD 1 =
    NV- on readout 0 / ADC_D, APD 2 = NV0 on readout 1 / ADC_C) for ODMR with on-board sweep, gated counting,
    two-channel time series and per-shot counts; extra laser gate lines on PMOD pins; DAC_A left free.
@@ -125,13 +126,40 @@ Modules and tools:
 - `hardware/bocquellab/rfsoc_sim_odmr_counter.py` (`RFSoCSimOdmrCounter`): the NI stepped ODMR counter with
   fake NI tasks that count the simulated APD (`board.soc.sim_apd_counts(dwell)`); `dummy.cfg` only
   (`odmr_logic_rfsoc`, `odmr_gui_rfsoc`). With the real board the unchanged `NISteppedOdmrCounter` counts.
-- Tests (no qudi needed): `python C:\Software\RFSoC-NV\tests\test_simulator.py` (simulation only) and
+- `hardware/bocquellab/rfsoc_pulser.py` (`RFSoCPulser`, config name `rfsoc_pulser`, connector `board`):
+  `PulserInterface`, digital channels only, set in the config: `d_ch1: 'PMOD0_0'` (laser gate), `d_ch2:
+  'microwave'` (generator plays a rectangular pulse while high), `d_ch3: 'PMOD0_1'` (marker to NI PFI1); same
+  laser / gate channel names as the M8190A setup. Sample rate 307.2 MHz (3.2552 ns grid). `write_waveform`
+  keeps only the edges; `load_waveform` compiles (`rfsoc_nv.PulseSequencer`: one `seti` per PMOD change, 2-3
+  instructions per microwave pulse, endless loop, about 200 Rabi points in 1024 words) and refuses what
+  does not fit or is too dense; `pulser_on` recompiles with the microwave settings, claims the board and
+  starts; `pulser_off` = all outputs off. No analog channels, no sequence mode, no phase control.
+- `hardware/bocquellab/rfsoc_pulsed_microwave.py` (`RFSoCPulsedMicrowave`, connectors `pulser`,
+  `calibration`): the pulsed logic's optional `microwave` connector. "use ext. microwave" + frequency + power
+  in the pulsed GUI set the pulser's microwave frequency and gain (dBm through the calibration of
+  `rfsoc_microwave`); it plays nothing itself. Without it a sequence with microwave pulses is refused.
+- `hardware/bocquellab/rfsoc_sim_fast_counter.py` (`RFSoCSimFastCounter`): gated fast counter on the simulated
+  experiment with the behaviour of `fast_counter_ni` (10 ns bins, record per marker edge, row = edge number
+  modulo number of gates); `dummy.cfg` only (`pulsed_gui_rfsoc`, `pulsed_master_logic_rfsoc`, ...).
+- tProc v1 facts every long program must respect (firmware source `qick/firmware/ip/axis_tproc64x32_x8_v1`,
+  confirmed by measurement): 48-bit clock; 16-entry queue per output port, the processor stalls while one is
+  full; queues are NOT flushed by a stop or start, so outputs left in them block that port until the clock
+  of the next program reaches their time. `PulseSequencer` keeps the processor at most 1 ms ahead and
+  `QickBoard.outputs_off()` waits 50 ms after stopping. A port outputs at most every 3 clock cycles.
+- Tests (no qudi needed): `python C:\Software\RFSoC-NV\tests\test_simulator.py` (simulation only),
   `python C:\Software\RFSoC-NV\tests\board_check.py [--simulate]` (real board with nothing connected: low-gain
-  pulses on generator 0, PMOD0_0 toggling, tProc timing measurement, stepped CW).
+  pulses on generator 0, PMOD pins toggling, tProc timing measurement, stepped CW, pulse pattern) and
+  `tests\instruction_timing.py` (cycles per instruction). `tools\cw_tone.py`: tone at a list of gains for the
+  DAC power measurement (gains above 2000 need `--amplifier-disconnected`).
 - Measured on the board (2026-11-12): 5.0 clock cycles (16 ns) per `mathi`, 5.2-5.5 per `loopnz`; a 59-word
   qick-dawg `RabiSweep` with 51 000 shots runs in 0.46 s; `outputs_off` takes about 70 ms.
 - Measured 2026-11-13: a frequency step (`trigger_scan_point`) takes 0.8 ms (1.0 ms worst of 505), switching
   the microwave on 155 ms; ODMR with the NI counter at 5 ms dwell and 1 ms settle time: 7.6 ms per point.
+  Instruction times in clock cycles: regwi 2.2, memwi 2.4, synci 3.0, set 3.6, seti 3.7, memri 3.6, condj
+  3.6 (5 taken), mathi 4.9, bitwi 4.8, waiti 7.2. Pulse pattern of 50 Rabi points: repetition period 242.42 us
+  for 242.43 us programmed; through the qudi pulsed logic: start 0.2 s, stop 0.1 s, no gap between repetitions.
+- Not measured yet (needs cables / a scope): delay between the generator output and the PMOD pins, minimum
+  marker width the NI gate input (PFI1) accepts, the gate marker path as a whole.
 
 ## Big picture: three module layers
 
