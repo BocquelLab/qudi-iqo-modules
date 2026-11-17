@@ -28,6 +28,12 @@ puts this repo first so that same-named files here win over qudi-core's, e.g. in
 The setup wiring diagram is in `C:\Software\qudi-config\docs\nv_setup_wiring.pdf`. It must be read before
 any work on counting, scanning, microwave, laser modulation or pulsed measurements.
 
+Microwave power monitor: a Mini-Circuits ZX47-40LN-S+ detector on the circulator, read by the lab's **USBADC** board
+(STM32, repository `BocquelLab/USBADC`, USB CDC on COM7 of the lab PC, USB ID FFFF:0001; it also makes the 28 V of the
+amplifier and the detector's 5 V). Not the NI card, not the RFSoC. qudi module `hardware/bocquellab/usbadc.py`
+(read only; never write its output pins from qudi, the board's open-drain outputs may drive relays). Its firmware
+scales the ADC with 3.0 V although VDDA is the 3.3 V rail (corrected by `voltage_scale`).
+
 ## Config files: dummy vs lab
 
 - **`C:\Software\qudi-config\dummy.cfg`** — development on **any PC**. Dummy hardware only (`hardware/dummy/*`).
@@ -559,6 +565,7 @@ not installed yet; line length 120 per `pyproject.toml`).
 | USB virtual COM via vendor package imported lazily in `on_activate`, fault reporting, state checks before run-mode changes and starts | `laser/cobolt_06_laser.py` | `SimpleLaserInterface` |
 | NI-DAQmx | `ni_x_series/ni_x_series_analog_output.py` | `ProcessSetpointInterface` + `ProcessControlSwitchMixin` |
 | Shared connection module without interface (other hardware modules connect to it), `simulate` option, lab packages imported in `on_activate` | `bocquellab/rfsoc_qick_board.py` | — (`Base`) |
+| Binary packet protocol over USB CDC with pyserial (the device does not answer through NI-VISA), calibration table | `bocquellab/usbadc.py` | `ProcessValueInterface` |
 | Dummy with ConfigOption constructor + constraints | `dummy/process_control_dummy.py` | `ProcessControlInterface` |
 | Dummy with StatusVar | `dummy/switch_dummy.py` | `SwitchInterface` |
 | Hardware → hardware (interfuse) | `interfuse/switch_combiner_interfuse.py` | `SwitchInterface` |

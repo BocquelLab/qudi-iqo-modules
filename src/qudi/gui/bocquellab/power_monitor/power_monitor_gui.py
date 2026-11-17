@@ -33,10 +33,17 @@ from qudi.util.colordefs import QudiPalettePale as palette
 from qudi.util.units import ScaledFloat
 
 
+# Units that must not get an SI prefix (0.5 dBm is not "500 mdBm")
+NO_PREFIX_UNITS = ('dBm', 'dB', '°C')
+
+
 def format_reading(value, unit):
-    """ '355.62 µW', '12.34 mW' for unit 'W' (SI prefix chosen from the value); '-' for None / NaN. """
+    """ '355.62 µW', '12.34 mW' for unit 'W' (SI prefix chosen from the value); '-12.34 dBm' for the units in
+    NO_PREFIX_UNITS; '-' for None / NaN. """
     if value is None or not math.isfinite(value):
         return '-'
+    if unit in NO_PREFIX_UNITS:
+        return f'{float(value):.2f} {unit}'
     return f'{ScaledFloat(float(value)):.2r}{unit}'
 
 
@@ -103,6 +110,7 @@ class PowerMonitorGui(GuiBase):
         self._unit = logic.unit
         self._mw.channel_label.setText(f'Channel: {logic.channel}')
         self._mw.plot_widget.setLabel('left', logic.channel, units=logic.unit)
+        self._mw.plot_widget.getAxis('left').enableAutoSIPrefix(logic.unit not in NO_PREFIX_UNITS)
         self._update_wavelength(logic.wavelength)
         self._update_running(logic.is_running)
         times, values = logic.data

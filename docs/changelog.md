@@ -42,6 +42,8 @@
 - Added `hardware.bocquellab.rfsoc_pulsed_microwave.RFSoCPulsedMicrowave`: "ext. microwave" of the pulsed measurement logic for the RFSoC pulser (frequency and power in dBm of its microwave pulses, using the calibration of `RFSoCMicrowave`)
 - Added `hardware.bocquellab.rfsoc_sim_fast_counter.RFSoCSimFastCounter`: gated fast counter on the simulated RFSoC experiment, standing in for the NI gated counter (tests without hardware)
 - `gui.bocquellab.odmr.odmrgui.BocquelLabOdmrGui` no longer raises an error at start-up when 0 dBm is outside the power range of the microwave source
+- Added `hardware.bocquellab.usbadc.BocquelLabUsbAdc`: the lab's USBADC board (USB CDC, read only) as `ProcessValueInterface` for the ZX47-40LN-S+ microwave power detector: power in dBm from a calibration table (datasheet curve until measured) plus attenuation, detector voltage, detector temperature; corrects the firmware's 3.0 V ADC scaling (`voltage_scale`)
+- `gui.bocquellab.power_monitor.power_monitor_gui.PowerMonitorGui` shows dBm, dB and °C without SI prefix (0.5 dBm was shown as "500 mdBm")
 
 ### Other
 - Disabled workflow triggers on a draft PR
